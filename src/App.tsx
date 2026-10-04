@@ -16,7 +16,6 @@ import {
   Calendar, 
   ExternalLink, 
   ShieldCheck, 
-  HelpCircle,
   FileCheck
 } from 'lucide-react';
 
@@ -90,6 +89,7 @@ export interface DateSelectionState {
   punchError?: string | null;
   hoursError?: string | null;
   descError?: string | null;
+  touched?: boolean;
 }
 
 // --- HELPER FUNCTIONS ---
@@ -361,7 +361,6 @@ export default function App() {
   const [otpLoading, setOtpLoading] = useState(false);
   const [verifyLoading, setVerifyLoading] = useState(false);
   const [submissionFeedback, setSubmissionFeedback] = useState<string | null>(null);
-  const [showConfigModal, setShowConfigModal] = useState(false);
 
   // Helper: check API configuration
   const isApiConfigured = () => {
@@ -967,18 +966,10 @@ export default function App() {
         {view !== 'SUCCESS' && (
           <div className="mb-6">
             <div className="text-center border-b-4 border-[#006a4e] pb-4 mb-4">
-              <div className="flex items-center justify-between no-print mb-2">
+              <div className="flex items-center justify-center no-print mb-2">
                 <span className="text-xs font-bold uppercase tracking-wider text-emerald-800 bg-emerald-100 px-3 py-1 rounded-full">
                   Daffodil International University
                 </span>
-                <button
-                  type="button"
-                  onClick={() => setShowConfigModal(true)}
-                  className="text-xs font-medium text-gray-500 hover:text-[#006a4e] flex items-center gap-1 cursor-pointer"
-                >
-                  <HelpCircle className="w-3.5 h-3.5" />
-                  <span>Backend & API Info</span>
-                </button>
               </div>
 
               <h1 id="mainTitle" className="text-xl sm:text-2xl md:text-3xl font-extrabold text-[#006a4e] uppercase tracking-wide">
@@ -1765,69 +1756,6 @@ export default function App() {
                   </button>
                 </div>
               )}
-            </div>
-          </div>
-        )}
-
-        {/* BACKEND & API CONFIG MODAL */}
-        {showConfigModal && (
-          <div className="fixed inset-0 bg-black/60 flex justify-center items-center z-50 p-4">
-            <div className="bg-white rounded-2xl max-w-xl w-full p-6 shadow-2xl space-y-4">
-              <div className="flex items-center justify-between border-b pb-3">
-                <h3 className="font-bold text-lg text-gray-900 flex items-center gap-2">
-                  <ShieldCheck className="w-5 h-5 text-[#006a4e]" />
-                  <span>Portal Configuration & Backend Details</span>
-                </h3>
-                <button 
-                  onClick={() => setShowConfigModal(false)}
-                  className="text-gray-400 hover:text-gray-600"
-                >
-                  <X className="w-5 h-5" />
-                </button>
-              </div>
-
-              <div className="space-y-3 text-xs sm:text-sm text-gray-700">
-                <div>
-                  <span className="font-bold block text-gray-900">Google Apps Script Endpoint:</span>
-                  <code className="bg-gray-100 p-2 rounded block break-all text-xs font-mono text-gray-800 mt-1">
-                    {API_URL}
-                  </code>
-                </div>
-
-                <div>
-                  <span className="font-bold block text-gray-900">Google Drive Upload Folder ID:</span>
-                  <code className="bg-gray-100 p-1.5 rounded block text-xs font-mono text-[#006a4e] mt-1 font-bold">
-                    {DRIVE_FOLDER_ID}
-                  </code>
-                </div>
-
-                <div>
-                  <span className="font-bold block text-gray-900">Target Google Sheets Sheet:</span>
-                  <span className="bg-emerald-50 text-emerald-800 font-bold px-2 py-0.5 rounded text-xs">
-                    Supervisor_Inputs
-                  </span>
-                </div>
-
-                <div className="bg-gray-50 p-3 rounded-lg border text-xs">
-                  <p className="font-semibold text-gray-800 mb-1">Features implemented:</p>
-                  <ul className="list-disc pl-4 space-y-1 text-gray-600">
-                    <li>Dynamic In-Table Checkbox selection & OT Hours input (1-3 hrs)</li>
-                    <li>Real-time punch validation against actual check-in/out times</li>
-                    <li>Weekend/Holiday expanded area with mandatory Task Description (200 words max)</li>
-                    <li>Optional document upload, renamed to [EmpID]_[Date].[ext]</li>
-                    <li>Drive upload to folder 1eUApmny3ftp235GpW7zoN23KeV879ACA</li>
-                  </ul>
-                </div>
-              </div>
-
-              <div className="flex justify-end pt-2">
-                <button 
-                  onClick={() => setShowConfigModal(false)}
-                  className="bg-[#006a4e] text-white px-5 py-2 rounded-lg font-bold text-xs"
-                >
-                  Close
-                </button>
-              </div>
             </div>
           </div>
         )}
