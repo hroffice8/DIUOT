@@ -514,33 +514,80 @@ export default function App() {
     }
   };
 
-  // Checkbox toggle handler - immediately enforces mandatory hours on selection
+  // Helper to mark any unfilled selected dates as having hoursError when navigating to other sections
+  const validateBeforeNavigating = (): boolean => {
+    const selectedList = Object.values(dateStates).filter(d => d.selected);
+    const missing = selectedList.filter(d => !d.otHours || d.otHours.trim() === '');
+    if (missing.length > 0) {
+      setDateStates(prev => {
+        const next = { ...prev };
+        missing.forEach(m => {
+          next[m.date] = {
+            ...next[m.date],
+            touched: true,
+            hoursError: 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।'
+          };
+        });
+        return next;
+      });
+      return false;
+    }
+    return true;
+  };
+
+  // Checkbox toggle handler
+  // Note: Warning is NOT shown immediately on select; it shows when user tabs/clicks away without entering hours
   const handleToggleDate = (date: string) => {
     setDateStates(prev => {
       const current = prev[date];
       if (!current) return prev;
 
       const nextSelected = !current.selected;
-      let hoursError: string | null = null;
+      const nextStates = { ...prev };
 
-      // When a date is selected, hours entry is strictly MANDATORY!
-      if (nextSelected && (!current.otHours || current.otHours.trim() === '')) {
-        hoursError = 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।';
+      if (nextSelected) {
+        // Newly selected date: do NOT show warning immediately
+        nextStates[date] = {
+          ...current,
+          selected: true,
+          touched: false,
+          hoursError: null,
+          punchError: null,
+          descError: null
+        };
+
+        // If any other previously selected date was left empty, mark that other date with error
+        Object.keys(nextStates).forEach(k => {
+          if (k !== date && nextStates[k].selected && (!nextStates[k].otHours || nextStates[k].otHours.trim() === '')) {
+            nextStates[k] = {
+              ...nextStates[k],
+              touched: true,
+              hoursError: 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।'
+            };
+          }
+        });
+      } else {
+        // Unselected date: completely clear hours and any error
+        nextStates[date] = {
+          ...current,
+          selected: false,
+          otHours: '',
+          touched: false,
+          hoursError: null,
+          punchError: null,
+          descError: null,
+          taskDescription: '',
+          file: null,
+          fileName: undefined,
+          fileBase64: undefined,
+          mimeType: undefined
+        };
       }
 
-      return {
-        ...prev,
-        [date]: {
-          ...current,
-          selected: nextSelected,
-          hoursError: nextSelected ? hoursError : null,
-          punchError: nextSelected ? current.punchError : null,
-          descError: nextSelected ? current.descError : null
-        }
-      };
+      return nextStates;
     });
 
-    // Auto-focus the OT hours input immediately when date is checked
+    // Auto-focus the OT hours input immediately so user can type comfortably
     setTimeout(() => {
       const inputEl = document.getElementById(`ot-input-${date}`);
       if (inputEl) {
@@ -564,17 +611,21 @@ export default function App() {
       let punchError: string | null = null;
       let hoursError: string | null = null;
 
-      // If empty, immediately enforce mandatory requirement
       if (filtered === '') {
-        hoursError = 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।';
+        // If user already touched/blurred this field before and now clears it, keep mandatory error
+        if (current.touched) {
+          hoursError = 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।';
+        }
       } else {
         const durationMin = parseDurationToMinutes(filtered);
-        if (durationMin !== null && durationMin < 60) {
-          hoursError = 'ডিউটি সময় সর্বনিম্ন ১:০০ ঘণ্টা (hh:mm) হতে হবে।';
-        } else if (durationMin !== null && matchingRecord) {
-          const punchResult = validateOtAgainstPunch(matchingRecord, filtered);
-          if (!punchResult.isValid) {
-            punchError = punchResult.message;
+        if (durationMin !== null && durationMin >= 60) {
+          // Valid hours provided, clear mandatory hours error
+          hoursError = null;
+          if (matchingRecord) {
+            const punchResult = validateOtAgainstPunch(matchingRecord, filtered);
+            if (!punchResult.isValid) {
+              punchError = punchResult.message;
+            }
           }
         }
       }
@@ -591,17 +642,19 @@ export default function App() {
     });
   };
 
-  // OT Hours blur handler for auto-formatting
+  // OT Hours blur handler - triggers when user clicks away, tabs away, or navigates away
   const handleOtHoursBlur = (date: string) => {
     setDateStates(prev => {
       const current = prev[date];
       if (!current) return prev;
 
+      // If user left the input empty after clicking or tabbing away, enforce mandatory requirement now!
       if (!current.otHours || current.otHours.trim() === '') {
         return {
           ...prev,
           [date]: {
             ...current,
+            touched: true,
             hoursError: 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।'
           }
         };
@@ -626,6 +679,7 @@ export default function App() {
         ...prev,
         [date]: {
           ...current,
+          touched: true,
           otHours: formatted,
           hoursError,
           punchError
@@ -720,10 +774,11 @@ export default function App() {
     // STRICT CHECK: Date selected but hours missing? Cannot proceed to any subsequent option!
     const missingHoursItem = selectedList.find(d => !d.otHours || d.otHours.trim() === '');
     if (missingHoursItem) {
+      validateBeforeNavigating();
       const inputEl = document.getElementById(`ot-input-${missingHoursItem.date}`);
       inputEl?.focus();
       document.getElementById(`row-${missingHoursItem.date}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      alert(`⚠️ তারিখ [${missingHoursItem.date}] সিলেক্ট করা হয়েছে কিন্তু ঘণ্টা লেখা হয়নি!\n\nতারিখ সিলেক্ট করার পর ঘণ্টা না লিখে পরবর্তী কোনো অপশনে যাওয়া যাবে না। অনুগ্রহ করে অনুমোদিত ঘণ্টা (সর্বনিম্ন ১:০০) লিখুন অথবা তারিখটি আনসিলেক্ট করুন।`);
+      alert(`⚠️ তারিখ [${missingHoursItem.date}] সিলেক্ট করা হয়েছে কিন্তু ঘণ্টা লেখা হয়নি!\n\nতারিখ সিলেক্ট করার পর ঘণ্টা না লিখে পরবর্তী কোনো অপশনে যাওয়া বা সাবমিট করা যাবে না। অনুগ্রহ করে অনুমোদিত ঘণ্টা (সর্বনিম্ন ১:০০) লিখুন অথবা তারিখটি আনসিলেক্ট করুন।`);
       return false;
     }
 
@@ -939,6 +994,17 @@ export default function App() {
 
   const handlePrint = (e: React.MouseEvent) => {
     e.preventDefault();
+    if (!validateBeforeNavigating()) {
+      const selectedList = Object.values(dateStates).filter(d => d.selected);
+      const missing = selectedList.find(d => !d.otHours || d.otHours.trim() === '');
+      if (missing) {
+        const inputEl = document.getElementById(`ot-input-${missing.date}`);
+        inputEl?.focus();
+        document.getElementById(`row-${missing.date}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        alert(`⚠️ তারিখ [${missing.date}] সিলেক্ট করা হয়েছে কিন্তু ঘণ্টা লেখা হয়নি!\n\nতারিখ সিলেক্ট করার পর ঘণ্টা না লিখে পরবর্তী কোনো অপশনে যাওয়া বা প্রিন্ট করা যাবে না। অনুগ্রহ করে অনুমোদিত ঘণ্টা (সর্বনিম্ন ১:০০) লিখুন অথবা তারিখটি আনসিলেক্ট করুন।`);
+      }
+      return;
+    }
     setTimeout(() => {
       window.print();
     }, 150);
@@ -949,12 +1015,12 @@ export default function App() {
     return Object.values(dateStates).filter(d => d.selected).length;
   }, [dateStates]);
 
-  // Check if any selected date has missing/empty hours
-  const unfilledDates = useMemo(() => {
-    return Object.values(dateStates).filter(d => d.selected && (!d.otHours || d.otHours.trim() === ''));
+  // Dates with active hours error (after user blurred/clicked away or attempted action without entering hours)
+  const datesWithHoursError = useMemo(() => {
+    return Object.values(dateStates).filter(d => d.selected && (!d.otHours || d.otHours.trim() === '') && (d.touched || !!d.hoursError));
   }, [dateStates]);
 
-  const hasUnfilledSelectedDates = unfilledDates.length > 0;
+  const hasHoursErrorAnywhere = datesWithHoursError.length > 0;
 
   const targetMonthText = sysConfig ? `${sysConfig.month} ${sysConfig.year}` : 'Current Month';
 
@@ -1140,8 +1206,10 @@ export default function App() {
                     const isSelected = rowState.selected;
                     const isSpecial = isWeekendOrHoliday(record.status);
                     const wordCount = getWordCount(rowState.taskDescription);
-                    const isHoursEmpty = isSelected && (!rowState.otHours || rowState.otHours.trim() === '');
-                    const hasError = !!(rowState.punchError || rowState.hoursError || rowState.descError || isHoursEmpty);
+                    const hasHoursError = isSelected && !!rowState.hoursError;
+                    const hasPunchError = isSelected && !!rowState.punchError;
+                    const hasDescError = isSelected && !!rowState.descError;
+                    const hasError = hasHoursError || hasPunchError || hasDescError;
 
                     return (
                       <React.Fragment key={record.date}>
@@ -1150,11 +1218,11 @@ export default function App() {
                           id={`row-${record.date}`}
                           className={`transition-colors duration-150 ${
                             isSelected 
-                              ? isHoursEmpty 
+                              ? hasError 
                                 ? 'bg-red-50/70 border-l-4 border-red-500'
                                 : 'bg-emerald-50/80 border-l-4 border-[#006a4e]' 
                               : 'hover:bg-gray-50'
-                          } ${hasError && isSelected ? 'bg-red-50/60' : ''}`}
+                          }`}
                         >
                           {/* 1. SELECT CHECKBOX */}
                           <td className="px-3 py-3 text-center no-print">
@@ -1173,7 +1241,7 @@ export default function App() {
                           <td className="px-3 py-3 font-semibold whitespace-nowrap">
                             <div className="flex items-center gap-1.5">
                               {isSelected && (
-                                <span className={`inline-block w-2 h-2 rounded-full no-print ${isHoursEmpty ? 'bg-red-500 animate-ping' : 'bg-[#006a4e]'}`}></span>
+                                <span className={`inline-block w-2 h-2 rounded-full no-print ${hasError ? 'bg-red-500 animate-ping' : 'bg-[#006a4e]'}`}></span>
                               )}
                               <span>{record.date}</span>
                             </div>
@@ -1229,7 +1297,7 @@ export default function App() {
                                   className={`w-20 h-8 text-center font-bold text-sm rounded border transition-all ${
                                     !isSelected 
                                       ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' 
-                                      : isHoursEmpty || rowState.punchError || rowState.hoursError
+                                      : hasHoursError || hasPunchError
                                         ? 'bg-red-50 text-red-700 border-red-500 ring-2 ring-red-400'
                                         : 'bg-white text-gray-900 border-emerald-500 focus:ring-2 focus:ring-[#006a4e] focus:border-[#006a4e]'
                                   }`}
@@ -1250,14 +1318,14 @@ export default function App() {
                         </tr>
 
                         {/* REAL-TIME VALIDATION WARNING FOR NORMAL DAYS */}
-                        {isSelected && !isSpecial && (rowState.punchError || rowState.hoursError || isHoursEmpty) && (
+                        {isSelected && !isSpecial && (hasHoursError || hasPunchError) && (
                           <tr className="bg-red-50/80 border-b border-red-200 no-print">
                             <td colSpan={10} className="px-4 py-2.5">
                               <div className="flex items-start gap-2 text-red-800 text-xs sm:text-sm font-semibold">
                                 <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
                                 <div>
                                   <span className="font-bold">[{record.date}]: </span>
-                                  {rowState.hoursError || rowState.punchError || 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।'}
+                                  {rowState.hoursError || rowState.punchError}
                                 </div>
                               </div>
                             </td>
@@ -1297,7 +1365,7 @@ export default function App() {
                                       placeholder="hh:mm *"
                                       maxLength={5}
                                       className={`w-20 h-7 text-center font-bold text-xs rounded border bg-white ${
-                                        isHoursEmpty || rowState.hoursError || rowState.punchError ? 'border-red-500 ring-2 ring-red-400 text-red-700 bg-red-50' : 'border-emerald-500 text-gray-900'
+                                        hasHoursError || hasPunchError ? 'border-red-500 ring-2 ring-red-400 text-red-700 bg-red-50' : 'border-emerald-500 text-gray-900 focus:ring-2 focus:ring-[#006a4e]'
                                       }`}
                                     />
                                     <span className="text-[11px] text-gray-500 font-semibold">(সর্বনিম্ন ১:০০)</span>
@@ -1309,10 +1377,10 @@ export default function App() {
                                 </div>
 
                                 {/* Punch or hours error if any */}
-                                {(rowState.punchError || rowState.hoursError || isHoursEmpty) && (
+                                {(hasHoursError || hasPunchError) && (
                                   <div className="no-print bg-red-50 border-l-4 border-red-500 p-2.5 rounded-r text-red-800 text-xs sm:text-sm font-semibold flex items-center gap-2">
                                     <AlertTriangle className="w-4 h-4 text-red-600 shrink-0" />
-                                    <span>{rowState.hoursError || rowState.punchError || 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।'}</span>
+                                    <span>{rowState.hoursError || rowState.punchError}</span>
                                   </div>
                                 )}
 
@@ -1512,8 +1580,8 @@ export default function App() {
                 </ul>
               </div>
 
-              {/* MANDATORY UNFILLED HOURS BLOCKER BANNER */}
-              {hasUnfilledSelectedDates && (
+              {/* MANDATORY UNFILLED HOURS BLOCKER BANNER - only shown when user clicked/tabbed away or attempted action without entering hours */}
+              {hasHoursErrorAnywhere && (
                 <div className="mb-6 p-4 sm:p-5 bg-red-50 border-2 border-red-500 rounded-xl text-red-900 text-xs sm:text-sm font-bold flex items-start gap-3 shadow-md animate-pulse no-print">
                   <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
                   <div>
@@ -1521,7 +1589,7 @@ export default function App() {
                       ডিউটি ঘণ্টা পূরণ করা বাধ্যতামূলক!
                     </p>
                     <p className="text-xs sm:text-sm font-semibold text-gray-800 mt-1">
-                      আপনি <span className="text-red-700 font-black">{unfilledDates.length}</span> টি তারিখ সিলেক্ট করেছেন কিন্তু ঘণ্টা লেখেননি ({unfilledDates.map(d => d.date).join(', ')} )। তারিখ সিলেক্ট করার পর ঘণ্টা না লিখে পরবর্তী কোনো অপশনে যাওয়া বা সাবমিট করা যাবে না। অনুগ্রহ করে টেবিলে লাল চিহ্নিত তারিখে অনুমোদিত ঘণ্টা লিখুন অথবা তারিখটি আনসিলেক্ট করুন।
+                      আপনি <span className="text-red-700 font-black">{datesWithHoursError.length}</span> টি তারিখ সিলেক্ট করেছেন কিন্তু ঘণ্টা লেখেননি ({datesWithHoursError.map(d => d.date).join(', ')} )। তারিখ সিলেক্ট করার পর ঘণ্টা না লিখে পরবর্তী কোনো অপশনে যাওয়া বা সাবমিট করা যাবে না। অনুগ্রহ করে টেবিলে লাল চিহ্নিত তারিখে অনুমোদিত ঘণ্টা লিখুন অথবা তারিখটি আনসিলেক্ট করুন।
                     </p>
                   </div>
                 </div>
@@ -1532,7 +1600,16 @@ export default function App() {
                 <input 
                   type="checkbox" 
                   checked={agreed}
-                  onChange={(e) => setAgreed(e.target.checked)}
+                  onChange={(e) => {
+                    if (e.target.checked && !validateBeforeNavigating()) {
+                      const firstMissing = Object.values(dateStates).find(d => d.selected && (!d.otHours || d.otHours.trim() === ''));
+                      if (firstMissing) {
+                        document.getElementById(`ot-input-${firstMissing.date}`)?.focus();
+                        document.getElementById(`row-${firstMissing.date}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                      }
+                    }
+                    setAgreed(e.target.checked);
+                  }}
                   className="w-6 h-6 accent-[#006a4e] rounded cursor-pointer shrink-0" 
                 /> 
                 <span className="text-gray-900 uppercase tracking-tight text-xs sm:text-sm">
@@ -1550,6 +1627,7 @@ export default function App() {
                     type="text" 
                     id="supId"
                     value={form.supId}
+                    onFocus={() => validateBeforeNavigating()}
                     onChange={(e) => setForm(prev => ({ ...prev, supId: e.target.value }))}
                     className="w-full p-3 border-2 border-gray-200 rounded-lg focus:ring-4 focus:ring-[#006a4e]/10 focus:border-[#006a4e] outline-none font-bold text-sm sm:text-base" 
                     placeholder={t('supIdPlaceholder', "Enter Your Supervisor ID")} 
@@ -1562,6 +1640,7 @@ export default function App() {
                   <input 
                     type="email" 
                     value={email}
+                    onFocus={() => validateBeforeNavigating()}
                     onChange={(e) => setEmail(e.target.value)}
                     className="w-full p-3 border-2 border-gray-200 rounded-lg focus:ring-4 focus:ring-[#006a4e]/10 focus:border-[#006a4e] outline-none font-bold text-sm sm:text-base" 
                     placeholder={t('supEmailPlaceholder', "supervisor@diu.edu.bd")} 
@@ -1616,20 +1695,13 @@ export default function App() {
                     type="button"
                     onClick={initiateOtp} 
                     disabled={otpLoading}
-                    className={`px-10 py-3.5 rounded-xl font-black text-base shadow-lg transition transform hover:scale-[1.02] disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer ${
-                      hasUnfilledSelectedDates
-                        ? 'bg-amber-600 hover:bg-amber-700 text-white ring-2 ring-red-400'
-                        : 'bg-[#16a34a] hover:bg-[#11803a] text-white'
-                    }`}
-                    title={hasUnfilledSelectedDates ? "তারিখ সিলেক্ট করার পর ঘণ্টা না লিখে পরবর্তী অপশনে যাওয়া যাবে না" : ""}
+                    className="bg-[#16a34a] hover:bg-[#11803a] text-white px-10 py-3.5 rounded-xl font-black text-base shadow-lg transition transform hover:scale-[1.02] disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
                   >
                     <ShieldCheck className="w-5 h-5" />
                     <span>
                       {otpLoading 
                         ? t('otpBtnLoading', "Sending Code...") 
-                        : hasUnfilledSelectedDates 
-                          ? "ঘণ্টা লিখুন (বাধ্যতামূলক)" 
-                          : t('otpBtn', "Request OTP & Submit")}
+                        : t('otpBtn', "Request OTP & Submit")}
                     </span>
                   </button>
                 </div>
