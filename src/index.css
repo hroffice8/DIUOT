@@ -1,0 +1,99 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #f3f4f6;
+    font-family: 'Inter', 'Noto Sans Bengali', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+}
+
+.checkmark-circle {
+  width: 90px;
+  height: 90px;
+  background: #dcfce7;
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 20px;
+}
+.checkmark {
+  color: #16a34a;
+  font-size: 46px;
+  line-height: 1;
+}
+
+/* Print Specific Optimizations */
+@media print {
+  @page {
+    size: A4 portrait;
+    margin: 8mm 10mm;
+  }
+
+  html, body {
+    background-color: white !important;
+    color: #111827 !important;
+    height: auto !important;
+    min-height: initial !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+    font-size: 8.5pt !important;
+  }
+
+  .no-print,
+  button,
+  input[type="checkbox"],
+  input[type="file"],
+  .no-print-area {
+    display: none !important;
+  }
+
+  #root, .print-container {
+    box-shadow: none !important;
+    max-width: 100% !important;
+    width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border: none !important;
+    background-color: white !important;
+  }
+
+  table {
+    font-size: 8pt !important;
+    width: 100% !important;
+    border-collapse: collapse !important;
+    page-break-inside: auto;
+  }
+
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+
+  th, td {
+    border: 1px solid #d1d5db !important;
+    padding: 3px 5px !important;
+  }
+
+  th {
+    background-color: #f3f4f6 !important;
+    color: #111827 !important;
+    font-weight: 700 !important;
+  }
+
+  .print-signatures {
+    display: flex !important;
+    visibility: visible !important;
+    margin-top: 36px !important;
+    justify-content: space-between !important;
+    page-break-inside: avoid;
+  }
+
+  .print-clean-text {
+    border: none !important;
+    background: transparent !important;
+    padding: 0 !important;
+  }
+}

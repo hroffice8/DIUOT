@@ -1,0 +1,6 @@
+{
+  "name": "DIU Attendance & Overtime Review Portal",
+  "description": "Official portal for reviewing DIU employee attendance, weekend and holiday duty, OT hours validation against punch data, task descriptions, and supporting documents.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
