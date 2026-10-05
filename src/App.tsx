@@ -35,12 +35,13 @@ const TUTORIAL_URL = "https://drive.google.com/file/d/1pO-BADnvdbjUqSkUPrlLnFG1E
 const DRIVE_FOLDER_ID = "1eUApmny3ftp235GpW7zoN23KeV879ACA";
 
 /**
- * FEATURE FLAG: Employee Approval Validation
- * Default: false (as per specification).
- * When complete employee approval rules data is ready in the future,
- * changing this flag to `true` activates live approval validation.
+ * FEATURE FLAGS:
+ * - ENABLE_EMPLOYEE_APPROVAL_VALIDATION: Controls blocking validation on submit
+ * - SHOW_DUTY_APPROVAL_UI: Controls display of Duty Approval / Weekday badges in UI.
+ *   Set to false to hide while backend information is being prepared.
  */
 export const ENABLE_EMPLOYEE_APPROVAL_VALIDATION = false;
+export const SHOW_DUTY_APPROVAL_UI = false;
 
 // --- TYPES ---
 export interface AttendanceRecord {
@@ -54,9 +55,21 @@ export interface AttendanceRecord {
   status: string;
 }
 
+export interface WeekdayPermissions {
+  Saturday?: string;
+  Sunday?: string;
+  Monday?: string;
+  Tuesday?: string;
+  Wednesday?: string;
+  Thursday?: string;
+  Friday?: string;
+  [key: string]: string | undefined;
+}
+
 export interface EmployeeApprovalRules {
   maxOtHoursPerDay?: number | null; // e.g. 2 or 3 hours
-  maxOtDaysPerWeek?: number | null; // e.g. 3 or 4 days
+  maxOtDaysPerWeek?: number | null; // Optional legacy fallback
+  weekdayPermissions?: WeekdayPermissions;
   holidayDutyPermission?: 'YES' | 'NO' | boolean | string | null;
   weekendDutyPermission?: 'YES' | 'NO' | boolean | string | null;
   dutyPermissionType?: 'BOTH' | 'HOLIDAY_ONLY' | 'WEEKEND_ONLY' | 'NONE' | string | null;
@@ -378,9 +391,23 @@ export interface ApprovalValidationResult {
   errors: string[];
 }
 
+// Helper to normalize weekday name from day string (e.g. "Sat", "Saturday")
+export function normalizeWeekdayName(dayStr: string): 'Saturday' | 'Sunday' | 'Monday' | 'Tuesday' | 'Wednesday' | 'Thursday' | 'Friday' | null {
+  if (!dayStr) return null;
+  const s = dayStr.trim().toLowerCase();
+  if (s.startsWith('sat')) return 'Saturday';
+  if (s.startsWith('sun')) return 'Sunday';
+  if (s.startsWith('mon')) return 'Monday';
+  if (s.startsWith('tue')) return 'Tuesday';
+  if (s.startsWith('wed')) return 'Wednesday';
+  if (s.startsWith('thu')) return 'Thursday';
+  if (s.startsWith('fri')) return 'Friday';
+  return null;
+}
+
 export function validateEmployeeApprovalRules(
   rules: EmployeeApprovalRules | undefined,
-  selectedDates: { date: string; status: string; otHours: string }[]
+  selectedDates: { date: string; day?: string; status: string; otHours: string }[]
 ): ApprovalValidationResult {
   if (!ENABLE_EMPLOYEE_APPROVAL_VALIDATION || !rules) {
     return { isValid: true, errors: [] };
@@ -395,13 +422,28 @@ export function validateEmployeeApprovalRules(
       const minutes = parseDurationToMinutes(item.otHours);
       if (minutes !== null && minutes > maxMinutes) {
         errors.push(
-          `Date ${item.date}: Daily overtime (${item.otHours} hrs) exceeds approved maximum limit of ${rules.maxOtHoursPerDay} hours.`
+          `তারিখ ${item.date}: দৈনিক ওভারটাইম (${item.otHours} ঘণ্টা) অনুমোদিত সর্বোচ্চ সীমা (${rules.maxOtHoursPerDay} ঘণ্টা) অতিক্রম করেছে।`
         );
       }
     }
   }
 
-  // 2. Weekend and Holiday Duty Permissions
+  // 2. Weekday duty permission check (Saturday to Friday)
+  if (rules.weekdayPermissions) {
+    for (const item of selectedDates) {
+      const dayName = normalizeWeekdayName(item.day || '');
+      if (dayName && rules.weekdayPermissions[dayName]) {
+        const perm = String(rules.weekdayPermissions[dayName]).trim().toUpperCase();
+        if (perm === 'NO') {
+          errors.push(
+            `তারিখ ${item.date} (${dayName}): এই কর্মীর জন্য ${dayName} বারে ডিউটি অনুমোদিত নয় (Duty permission: NO)।`
+          );
+        }
+      }
+    }
+  }
+
+  // 3. Weekend and Holiday Duty Permissions
   const permType = String(rules.dutyPermissionType || 'BOTH').toUpperCase().trim();
   const holPerm = String(rules.holidayDutyPermission || 'YES').toUpperCase().trim();
   const wkndPerm = String(rules.weekendDutyPermission || 'YES').toUpperCase().trim();
@@ -412,18 +454,18 @@ export function validateEmployeeApprovalRules(
 
     if (isWknd) {
       if (wkndPerm === 'NO' || permType === 'HOLIDAY_ONLY' || permType === 'NONE') {
-        errors.push(`Date ${item.date}: Weekend duty is not approved for this employee.`);
+        errors.push(`তারিখ ${item.date}: এই কর্মীর জন্য সাপ্তাহিক ছুটির দিনে (Weekend) ডিউটি অনুমোদিত নয়।`);
       }
     }
 
     if (isHol) {
       if (holPerm === 'NO' || permType === 'WEEKEND_ONLY' || permType === 'NONE') {
-        errors.push(`Date ${item.date}: Holiday duty is not approved for this employee.`);
+        errors.push(`তারিখ ${item.date}: এই কর্মীর জন্য সরকারি/সাধারণ ছুটির দিনে (Holiday) ডিউটি অনুমোদিত নয়।`);
       }
     }
   }
 
-  // 3. Weekly permitted OT days check
+  // 4. Optional Legacy Weekly permitted OT days check (if configured)
   if (rules.maxOtDaysPerWeek && rules.maxOtDaysPerWeek > 0) {
     const weekCountMap: { [weekKey: string]: number } = {};
     for (const item of selectedDates) {
@@ -1260,17 +1302,17 @@ export default function App() {
         {/* BRANDED HEADER */}
         {view !== 'SUCCESS' && (
           <div className="mb-6">
-            <div className="text-center border-b-4 border-[#006a4e] pb-4 mb-4">
+            <div className="text-center border-b-4 border-[#034EA2] pb-4 mb-4">
               <div className="flex items-center justify-center no-print mb-2">
-                <span className="text-xl md:text-2xl font-bold uppercase tracking-wide text-emerald-800 bg-emerald-100 px-6 py-2 rounded-lg">
+                <span className="text-xl md:text-2xl font-bold uppercase tracking-wide text-[#034EA2] bg-blue-50 border border-blue-200 px-6 py-2 rounded-lg">
                   Daffodil International University
                 </span>
               </div>
 
-              <h1 id="mainTitle" className="text-xl sm:text-2xl md:text-3xl font-extrabold text-[#006a4e] uppercase tracking-wide">
+              <h1 id="mainTitle" className="text-xl sm:text-2xl md:text-3xl font-extrabold text-[#034EA2] uppercase tracking-wide">
                 {view === 'REPORT' 
                   ? `${t('reportTitleBase', 'Holiday and Overtime Duty Review Portal:')} ${targetMonthText}` 
-                  : t('appTitle', APP_TITLE)}
+                  : (sysConfig?.appTitle ? sysConfig.appTitle.replace(/DIU\s+/i, '') : APP_TITLE)}
               </h1>
               <p className="text-xs sm:text-sm text-gray-500 mt-1 font-semibold">
                  
@@ -1289,7 +1331,7 @@ export default function App() {
                   value={empId}
                   onChange={(e) => setEmpId(e.target.value)}
                   placeholder={t('searchPlaceholder', "Enter Employee ID (e.g. 710000000)")} 
-                  className="w-full p-4 pl-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-4 focus:ring-[#006a4e]/20 focus:border-[#006a4e] transition-all text-lg text-center font-bold"
+                  className="w-full p-4 pl-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-4 focus:ring-[#034EA2]/20 focus:border-[#034EA2] transition-all text-lg text-center font-bold"
                   onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                   autoFocus
                 />
@@ -1298,16 +1340,16 @@ export default function App() {
 
               <button 
                 onClick={handleSearch} 
-                className="w-full bg-[#006a4e] text-white py-4 rounded-xl font-black text-lg sm:text-xl hover:bg-[#00523c] transition shadow-lg transform hover:scale-[1.01] active:scale-95 uppercase tracking-wider flex items-center justify-center gap-3 cursor-pointer"
+                className="w-full bg-[#034EA2] text-white py-4 rounded-xl font-black text-lg sm:text-xl hover:bg-[#023d80] transition shadow-lg transform hover:scale-[1.01] active:scale-95 uppercase tracking-wider flex items-center justify-center gap-3 cursor-pointer"
               >
                 <Search className="w-5 h-5" />
                 {t('searchBtn', "Search Records")}
               </button>
             </div>
 
-            <div className="bg-[#f0f9f6] p-6 rounded-2xl border-2 border-[#006a4e]/20 text-left shadow-inner">
-              <h3 className="text-lg sm:text-xl font-bold mb-3 text-[#006a4e] flex items-center gap-2 border-b border-[#006a4e]/10 pb-2">
-                <FileCheck className="w-6 h-6 text-[#006a4e]" />
+            <div className="bg-[#f0f6fc] p-6 rounded-2xl border-2 border-[#034EA2]/20 text-left shadow-inner">
+              <h3 className="text-lg sm:text-xl font-bold mb-3 text-[#034EA2] flex items-center gap-2 border-b border-[#034EA2]/10 pb-2">
+                <FileCheck className="w-6 h-6 text-[#034EA2]" />
                 {t('instructionTitle', "গুরুত্বপূর্ণ নির্দেশনা")}
               </h3>
               <ul className="list-decimal pl-6 space-y-3 text-gray-800 text-sm sm:text-base font-medium leading-relaxed">
@@ -1322,7 +1364,7 @@ export default function App() {
                 href={t('tutorialUrl', TUTORIAL_URL)} 
                 target="_blank" 
                 rel="noopener noreferrer" 
-                className="flex items-center gap-2 text-[#006a4e] font-bold hover:underline text-base sm:text-lg"
+                className="flex items-center gap-2 text-[#034EA2] font-bold hover:underline text-base sm:text-lg"
               >
                 <span>🎥</span> {t('tutorialText', "Video Tutorial (ভিডিও টিউটোরিয়াল দেখুন)")}
                 <ExternalLink className="w-4 h-4" />
@@ -1334,7 +1376,7 @@ export default function App() {
                 <span>📌</span> {t('noteTitle', "বিশেষ দ্রষ্টব্য:")}
               </h4>
               <p className="mb-3">{t('noteDesc', "কোনো যোগ্য কর্মীর অ্যাটেনডেন্স পোর্টালে পাওয়া না গেলে, অথবা তালিকায় নাম না থাকলেও অনুমোদিত ওভারটাইম বা হলিডে ডিউটি থাকলে— অনুগ্রহ করে যোগাযোগ করুনঃ")}</p>
-              <div className="font-bold text-[#006a4e] bg-white p-3 sm:p-4 rounded-xl border border-gray-100 shadow-sm">
+              <div className="font-bold text-[#034EA2] bg-white p-3 sm:p-4 rounded-xl border border-gray-100 shadow-sm">
                 {t('contactName', "মোঃ নাদিম হোসেন")} <br/>
                 {t('contactDesig', "সিনিয়র অফিসার, এইচআর")} <br/>
                 {t('contactPhoneLabel', "ফোনঃ")} <span className="text-blue-700">{t('contactPhone', "01847334930")}</span> | {t('contactExtLabel', "এক্সটেনশনঃ")} <span className="text-blue-700">{t('contactExt', "65187")}</span>
@@ -1346,8 +1388,8 @@ export default function App() {
         {/* LOADING STATE */}
         {view === 'LOADING' && (
           <div id="loader" className="text-center py-24">
-            <div className="inline-block animate-spin rounded-full h-14 w-14 border-4 border-[#006a4e] border-t-transparent mb-4"></div>
-            <p className="text-[#006a4e] font-bold text-xl animate-pulse">{t('loadingText', "Searching employee attendance records...")}</p>
+            <div className="inline-block animate-spin rounded-full h-14 w-14 border-4 border-[#034EA2] border-t-transparent mb-4"></div>
+            <p className="text-[#034EA2] font-bold text-xl animate-pulse">{t('loadingText', "Searching employee attendance records...")}</p>
             <p className="text-gray-400 text-sm mt-2">Connecting to official attendance database...</p>
           </div>
         )}
@@ -1357,10 +1399,10 @@ export default function App() {
           <div id="resultArea" className="space-y-6">
             
             {/* EMPLOYEE INFO BANNER */}
-            <div className="bg-[#f0f9f6] p-4 sm:p-5 rounded-xl border border-[#006a4e]/20 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm shadow-sm">
+            <div className="bg-[#f0f6fc] p-4 sm:p-5 rounded-xl border border-[#034EA2]/20 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm shadow-sm">
               <div>
                 <span className="text-gray-500 block text-xs uppercase font-bold">{t('lblId', "Employee ID")}</span>
-                <strong className="text-[#006a4e] text-base font-black">{data.info?.id}</strong>
+                <strong className="text-[#034EA2] text-base font-black">{data.info?.id}</strong>
               </div>
               <div>
                 <span className="text-gray-500 block text-xs uppercase font-bold">{t('lblName', "Name")}</span>
@@ -1376,15 +1418,15 @@ export default function App() {
               </div>
 
               {/* WORK AREA (1-LINE BOX WITH SUBMIT & CHANGE BUTTON) */}
-              <div className="col-span-2 md:col-span-4 pt-3 border-t border-[#006a4e]/15 no-print">
+              <div className="col-span-2 md:col-span-4 pt-3 border-t border-[#034EA2]/15 no-print">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-1.5">
                   <label htmlFor="workAreaInput" className="text-xs sm:text-sm font-extrabold text-gray-800 flex items-center gap-1.5">
-                    <MapPin className="w-4 h-4 text-[#006a4e]" />
+                    <MapPin className="w-4 h-4 text-[#034EA2]" />
                     <span>Work Area</span>
                   </label>
                   {workAreaLastUpdated && (
-                    <span className="text-[11px] text-[#006a4e] font-semibold bg-emerald-100/70 px-2.5 py-0.5 rounded-md flex items-center gap-1">
-                      <Check className="w-3 h-3 text-[#006a4e]" />
+                    <span className="text-[11px] text-[#034EA2] font-semibold bg-blue-100/70 px-2.5 py-0.5 rounded-md flex items-center gap-1">
+                      <Check className="w-3 h-3 text-[#034EA2]" />
                       Saved in Employee Information (Last updated: {workAreaLastUpdated})
                     </span>
                   )}
@@ -1401,8 +1443,8 @@ export default function App() {
                 {!isEditingWorkArea && workArea.trim() ? (
                   /* 1. SAVED DISPLAY STATE WITH 'CHANGE' BUTTON */
                   <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
-                    <div className="flex-1 min-w-0 px-3.5 py-2.5 bg-emerald-50/70 border-2 border-emerald-300 rounded-lg text-sm font-semibold text-gray-900 flex items-center gap-2">
-                      <MapPin className="w-4 h-4 text-[#006a4e] shrink-0" />
+                    <div className="flex-1 min-w-0 px-3.5 py-2.5 bg-blue-50/70 border-2 border-blue-200 rounded-lg text-sm font-semibold text-gray-900 flex items-center gap-2">
+                      <MapPin className="w-4 h-4 text-[#034EA2] shrink-0" />
                       <span className="truncate">{workArea}</span>
                     </div>
                     <button
@@ -1411,7 +1453,7 @@ export default function App() {
                         setIsEditingWorkArea(true);
                         setWorkAreaSuccessMsg(null);
                       }}
-                      className="px-4 py-2.5 bg-white border-2 border-[#006a4e] text-[#006a4e] hover:bg-[#006a4e] hover:text-white rounded-lg text-sm font-bold transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer shrink-0"
+                      className="px-4 py-2.5 bg-white border-2 border-[#034EA2] text-[#034EA2] hover:bg-[#034EA2] hover:text-white rounded-lg text-sm font-bold transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer shrink-0"
                       title="Change or update Work Area location"
                     >
                       <Edit3 className="w-4 h-4" />
@@ -1438,7 +1480,7 @@ export default function App() {
                             }
                           }}
                           placeholder="উনি কোন লোকেশনে কাজ করেন, বিল্ডিং এর নাম, ফ্লোর নাম্বার, প্রযোজ্য ক্ষেত্রে অফিসের নাম/রুম নাম্বার সহ উল্লেখ করুন।"
-                          className="w-full pl-9 pr-3 py-2.5 text-sm rounded-lg border-2 border-gray-300 focus:border-[#006a4e] focus:ring-4 focus:ring-[#006a4e]/10 outline-none transition-all font-medium text-gray-900 bg-white"
+                          className="w-full pl-9 pr-3 py-2.5 text-sm rounded-lg border-2 border-gray-300 focus:border-[#034EA2] focus:ring-4 focus:ring-[#034EA2]/10 outline-none transition-all font-medium text-gray-900 bg-white"
                           autoFocus={isEditingWorkArea}
                         />
                         <MapPin className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1448,7 +1490,7 @@ export default function App() {
                         type="button"
                         onClick={handleSaveWorkAreaDirect}
                         disabled={workAreaLoading || !workArea.trim()}
-                        className="px-5 py-2.5 bg-[#006a4e] text-white hover:bg-[#00523c] disabled:bg-gray-300 disabled:cursor-not-allowed rounded-lg text-sm font-bold transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer shrink-0"
+                        className="px-5 py-2.5 bg-[#034EA2] text-white hover:bg-[#023d80] disabled:bg-gray-300 disabled:cursor-not-allowed rounded-lg text-sm font-bold transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer shrink-0"
                         title="Submit and save location to Employee Information sheet"
                       >
                         {workAreaLoading ? (
@@ -1486,6 +1528,56 @@ export default function App() {
                 )}
               </div>
 
+              {/* WEEKDAY DUTY PERMISSIONS (SATURDAY - FRIDAY) - Hidden until backend data is complete */}
+              {SHOW_DUTY_APPROVAL_UI && data.info?.approvalRules?.weekdayPermissions && (
+                <div className="col-span-2 md:col-span-4 pt-3 border-t border-[#034EA2]/15 no-print">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <span className="text-xs font-bold text-gray-700 flex items-center gap-1.5">
+                      <ShieldCheck className="w-4 h-4 text-[#034EA2]" />
+                      <span>ডিউটি অনুমতি (Duty Approval):</span>
+                    </span>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {(['Saturday', 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'] as const).map(day => {
+                        const perm = data.info?.approvalRules?.weekdayPermissions?.[day];
+                        const isAllowed = perm ? perm.toUpperCase().trim() !== 'NO' : true;
+                        return (
+                          <span 
+                            key={day}
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border transition-colors ${
+                              isAllowed 
+                                ? 'bg-emerald-50 text-emerald-800 border-emerald-200' 
+                                : 'bg-rose-50 text-rose-700 border-rose-300 font-bold'
+                            }`}
+                            title={`${day}: ${perm || 'YES'}`}
+                          >
+                            <span>{day.slice(0, 3)}:</span>
+                            <span className={isAllowed ? 'text-emerald-700 font-bold' : 'text-rose-600 font-black'}>
+                              {isAllowed ? 'YES' : 'NO'}
+                            </span>
+                          </span>
+                        );
+                      })}
+                      {data.info?.approvalRules?.holidayDutyPermission && (
+                        <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded text-[11px] font-semibold border ${
+                          String(data.info.approvalRules.holidayDutyPermission).toUpperCase().trim() === 'NO'
+                            ? 'bg-rose-50 text-rose-700 border-rose-300 font-bold'
+                            : 'bg-purple-50 text-purple-800 border-purple-200'
+                        }`}>
+                          <span>Holiday:</span>
+                          <span>{String(data.info.approvalRules.holidayDutyPermission).toUpperCase().trim()}</span>
+                        </span>
+                      )}
+                      {data.info?.approvalRules?.dutyPermissionType && (
+                        <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded text-[11px] font-bold border bg-teal-50 text-teal-800 border-teal-300">
+                          <span>Remarks:</span>
+                          <span className="font-extrabold text-[#034EA2]">{data.info.approvalRules.dutyPermissionType}</span>
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+
               {/* Print View for Work Area */}
               <div className="hidden print:block col-span-2 md:col-span-4 border-t border-gray-300 pt-2">
                 <span className="text-xs uppercase font-bold text-gray-600">Work Area: </span>
@@ -1494,11 +1586,11 @@ export default function App() {
             </div>
 
             {/* SELECTION GUIDANCE BANNER */}
-            <div className="no-print bg-emerald-50 border-l-4 border-[#006a4e] p-3.5 sm:p-4 rounded-r-xl flex flex-col sm:flex-row sm:items-start justify-between gap-3 shadow-xs">
+            <div className="no-print bg-blue-50/70 border-l-4 border-[#034EA2] p-3.5 sm:p-4 rounded-r-xl flex flex-col sm:flex-row sm:items-start justify-between gap-3 shadow-xs">
               <div className="flex items-start gap-2.5">
-                <Clock className="w-5 h-5 text-[#006a4e] shrink-0 mt-0.5" />
-                <div className="text-sm font-semibold text-emerald-950 space-y-1">
-                  <p className="font-bold text-[#006a4e] text-sm sm:text-base">
+                <Clock className="w-5 h-5 text-[#034EA2] shrink-0 mt-0.5" />
+                <div className="text-sm font-semibold text-slate-900 space-y-1">
+                  <p className="font-bold text-[#034EA2] text-sm sm:text-base">
                     নিচের Attendance Report এ Overtime এবং holiday/Weekend Duty এর তারিখ সিলেক্ট করুন।
                   </p>
                   <ul className="list-disc pl-5 space-y-0.5 text-xs sm:text-sm text-gray-800 font-medium">
@@ -1507,15 +1599,15 @@ export default function App() {
                   </ul>
                 </div>
               </div>
-              <div className="text-xs font-bold text-[#006a4e] bg-white px-3 py-1.5 rounded-lg border border-emerald-200 self-start sm:self-auto shadow-xs shrink-0">
-                সিলেক্ট করা হয়েছে: <span className="text-base text-emerald-700">{selectedCount}</span> দিন
+              <div className="text-xs font-bold text-[#034EA2] bg-white px-3 py-1.5 rounded-lg border border-blue-200 self-start sm:self-auto shadow-xs shrink-0">
+                সিলেক্ট করা হয়েছে: <span className="text-base text-blue-700">{selectedCount}</span> দিন
               </div>
             </div>
 
             {/* ATTENDANCE SUMMARY TABLE WITH IN-TABLE OT SELECTION */}
             <div className="overflow-x-auto border-2 border-gray-200 rounded-xl shadow-md">
               <table className="w-full text-sm text-left text-gray-800">
-                <thead className="text-xs text-white uppercase bg-[#006a4e] print:text-black print:bg-gray-100">
+                <thead className="text-xs text-white uppercase bg-[#034EA2] print:text-black print:bg-gray-100">
                   <tr>
                     <th scope="col" className="w-12 px-3 py-3.5 text-center no-print">
                       <span className="text-[11px] font-black tracking-wider">SELECT</span>
@@ -1528,7 +1620,7 @@ export default function App() {
                     <th scope="col" className="px-3 py-3.5 whitespace-nowrap">OUT TIME</th>
                     <th scope="col" className="px-3 py-3.5 whitespace-nowrap">WORKING HOURS</th>
                     <th scope="col" className="px-3 py-3.5 whitespace-nowrap">STATUS</th>
-                    <th scope="col" className="px-3 py-3.5 text-center whitespace-nowrap font-black bg-[#00523c] print:bg-gray-200">
+                    <th scope="col" className="px-3 py-3.5 text-center whitespace-nowrap font-black bg-[#002652] print:bg-gray-200">
                       <div className="flex items-center justify-center gap-1">
                         <span>OT HOURS</span>
                         <span className="text-red-300 font-black text-sm">*</span>
@@ -1561,7 +1653,7 @@ export default function App() {
                             isSelected 
                               ? hasError 
                                 ? 'bg-red-50/70 border-l-4 border-red-500'
-                                : 'bg-emerald-50/80 border-l-4 border-[#006a4e]' 
+                                : 'bg-blue-50/70 border-l-4 border-[#034EA2]' 
                               : 'hover:bg-gray-50'
                           }`}
                         >
@@ -1569,10 +1661,10 @@ export default function App() {
                           <td className="px-3 py-3 text-center no-print">
                             <label className="inline-flex items-center cursor-pointer p-1">
                               <input 
-                                type="checkbox"
+                                type="checkbox" 
                                 checked={isSelected}
                                 onChange={() => handleToggleDate(record.date)}
-                                className="w-5 h-5 rounded text-[#006a4e] accent-[#006a4e] focus:ring-[#006a4e] border-gray-300 cursor-pointer"
+                                className="w-5 h-5 rounded text-[#034EA2] accent-[#034EA2] focus:ring-[#034EA2] border-gray-300 cursor-pointer"
                                 aria-label={`Select date ${record.date}`}
                               />
                             </label>
@@ -1582,14 +1674,33 @@ export default function App() {
                           <td className="px-3 py-3 font-semibold whitespace-nowrap">
                             <div className="flex items-center gap-1.5">
                               {isSelected && (
-                                <span className={`inline-block w-2 h-2 rounded-full no-print ${hasError ? 'bg-red-500 animate-ping' : 'bg-[#006a4e]'}`}></span>
+                                <span className={`inline-block w-2 h-2 rounded-full no-print ${hasError ? 'bg-red-500 animate-ping' : 'bg-[#034EA2]'}`}></span>
                               )}
                               <span>{record.date}</span>
                             </div>
                           </td>
 
                           {/* 3. DAY */}
-                          <td className="px-3 py-3 whitespace-nowrap text-gray-700">{record.day}</td>
+                          <td className="px-3 py-3 whitespace-nowrap text-gray-700">
+                            <div className="flex items-center gap-1.5">
+                              <span>{record.day}</span>
+                              {SHOW_DUTY_APPROVAL_UI && (() => {
+                                const normDay = normalizeWeekdayName(record.day);
+                                const perm = normDay && data.info?.approvalRules?.weekdayPermissions?.[normDay];
+                                if (perm && perm.toUpperCase().trim() === 'NO') {
+                                  return (
+                                    <span 
+                                      className="no-print inline-block text-[10px] font-bold text-rose-700 bg-rose-50 border border-rose-200 px-1.5 py-0.5 rounded shadow-2xs"
+                                      title="এই বারে উক্ত কর্মীর ডিউটি অনুমোদিত নয় (Duty permission: NO)"
+                                    >
+                                      অনুমতি নেই
+                                    </span>
+                                  );
+                                }
+                                return null;
+                              })()}
+                            </div>
+                          </td>
 
                           {/* 4. SCH IN */}
                           <td className="px-3 py-3 whitespace-nowrap text-gray-600">{record.schIn || '-'}</td>
@@ -1613,7 +1724,7 @@ export default function App() {
                                 ? 'bg-purple-100 text-purple-900 border border-purple-200' 
                                 : record.status?.toUpperCase()?.includes('LATE')
                                   ? 'bg-amber-100 text-amber-900'
-                                  : 'bg-emerald-100 text-[#006a4e]'
+                                  : 'bg-blue-100 text-[#034EA2]'
                             }`}>
                               {record.status}
                             </span>
@@ -1640,7 +1751,7 @@ export default function App() {
                                       ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' 
                                       : hasHoursError || hasPunchError
                                         ? 'bg-red-50 text-red-700 border-red-500 ring-2 ring-red-400'
-                                        : 'bg-white text-gray-900 border-emerald-500 focus:ring-2 focus:ring-[#006a4e] focus:border-[#006a4e]'
+                                        : 'bg-white text-gray-900 border-blue-400 focus:ring-2 focus:ring-[#034EA2] focus:border-[#034EA2]'
                                   }`}
                                   title={
                                     !isSelected 
@@ -1675,14 +1786,14 @@ export default function App() {
 
                         {/* WEEKEND & HOLIDAY EXPANDED ROW (Triggered ONLY when STATUS is WEEKEND or HOLIDAY and selected) */}
                         {isSelected && isSpecial && (
-                          <tr className="bg-emerald-50/40 border-b-2 border-emerald-300 print:bg-white">
+                          <tr className="bg-blue-50/40 border-b-2 border-blue-200 print:bg-white">
                             <td colSpan={10} className="p-4 sm:p-5">
-                              <div className="rounded-xl border border-emerald-300/80 bg-white/90 p-4 space-y-4 shadow-xs">
+                              <div className="rounded-xl border border-blue-200/90 bg-white/95 p-4 space-y-4 shadow-xs">
                                 
                                 {/* Header badge for Weekend/Holiday with integrated Duty Hours input */}
-                                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-emerald-100 pb-3">
+                                <div className="flex flex-wrap items-center justify-between gap-3 border-b border-blue-100 pb-3">
                                   <div className="flex items-center gap-2">
-                                    <span className="bg-[#006a4e] text-white text-xs font-bold px-2.5 py-0.5 rounded">
+                                    <span className="bg-[#034EA2] text-white text-xs font-bold px-2.5 py-0.5 rounded">
                                       {record.status} Duty
                                     </span>
                                     <span className="text-xs font-bold text-gray-700">
@@ -1690,26 +1801,26 @@ export default function App() {
                                     </span>
                                   </div>
 
-                                  {/* Duty Hours in Weekend/Holiday expanded section */}
-                                  <div className="flex items-center gap-2 no-print bg-emerald-50 px-3 py-1.5 rounded-lg border border-emerald-200">
-                                    <label className="text-xs font-bold text-gray-800 flex items-center gap-1">
-                                      <span>অনুমোদিত ডিউটি ঘণ্টা (Duty Hours)</span>
-                                      <span className="text-red-600 font-bold">*</span>:
-                                    </label>
-                                    <input 
-                                      id={`ot-input-exp-${record.date}`}
-                                      type="text"
-                                      required={isSelected}
-                                      value={rowState.otHours}
-                                      onChange={(e) => handleOtHoursChange(record.date, e.target.value)}
-                                      onBlur={() => handleOtHoursBlur(record.date)}
-                                      placeholder="hh:mm *"
-                                      maxLength={5}
-                                      className={`w-20 h-7 text-center font-bold text-xs rounded border bg-white ${
-                                        hasHoursError || hasPunchError ? 'border-red-500 ring-2 ring-red-400 text-red-700 bg-red-50' : 'border-emerald-500 text-gray-900 focus:ring-2 focus:ring-[#006a4e]'
-                                      }`}
-                                    />
-                                    <span className="text-[11px] text-gray-500 font-semibold">(সর্বনিম্ন ১:০০)</span>
+                                  {/* Read-only Duty Hours Display (Input is managed in the main table row above) */}
+                                  <div 
+                                    onClick={() => {
+                                      const inputEl = document.getElementById(`ot-input-${record.date}`);
+                                      inputEl?.focus();
+                                    }}
+                                    className="flex items-center gap-2 no-print bg-blue-50/80 px-3 py-1.5 rounded-lg border border-blue-200 text-xs cursor-pointer hover:bg-blue-100/70 transition-colors"
+                                    title="টেবিলের OT HOURS কলাম থেকে ডিউটি ঘণ্টা পরিবর্তন করুন"
+                                  >
+                                    <Clock className="w-3.5 h-3.5 text-[#034EA2]" />
+                                    <span className="font-bold text-gray-800">অনুমোদিত ডিউটি ঘণ্টা (Duty Hours):</span>
+                                    {rowState.otHours ? (
+                                      <span className="font-extrabold text-[#034EA2] text-sm bg-white px-2 py-0.5 rounded border border-blue-300 shadow-2xs">
+                                        {rowState.otHours} hrs
+                                      </span>
+                                    ) : (
+                                      <span className="text-amber-700 font-semibold bg-amber-50 px-2 py-0.5 rounded border border-amber-200">
+                                        উপরের টেবিলে লিখুন *
+                                      </span>
+                                    )}
                                   </div>
 
                                   <div className="hidden print:block text-xs font-bold text-gray-800">
@@ -1752,7 +1863,7 @@ export default function App() {
                                       className={`w-full p-2.5 text-sm rounded-lg border outline-none font-normal transition-all ${
                                         rowState.descError 
                                           ? 'border-red-500 focus:ring-2 focus:ring-red-200' 
-                                          : 'border-gray-300 focus:ring-2 focus:ring-[#006a4e]/20 focus:border-[#006a4e]'
+                                          : 'border-gray-300 focus:ring-2 focus:ring-[#034EA2]/20 focus:border-[#034EA2]'
                                       }`}
                                     />
                                     {rowState.descError && (
@@ -1769,7 +1880,7 @@ export default function App() {
                                 </div>
 
                                 {/* OPTIONAL SUPPORTING FILE UPLOAD */}
-                                <div className="no-print pt-2 border-t border-emerald-100">
+                                <div className="no-print pt-2 border-t border-blue-100">
                                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                                     <div>
                                       <label className="text-xs sm:text-sm font-bold text-gray-800 block">
@@ -1782,7 +1893,7 @@ export default function App() {
 
                                     <div>
                                       {!rowState.file ? (
-                                        <label className="inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-50 hover:bg-emerald-100 text-[#006a4e] border border-emerald-300 rounded-lg text-xs font-bold cursor-pointer transition shadow-xs">
+                                        <label className="inline-flex items-center gap-2 px-3 py-1.5 bg-blue-50 hover:bg-blue-100 text-[#034EA2] border border-blue-300 rounded-lg text-xs font-bold cursor-pointer transition shadow-xs">
                                           <Upload className="w-3.5 h-3.5" />
                                           <span>Choose File</span>
                                           <input 
@@ -1793,8 +1904,8 @@ export default function App() {
                                           />
                                         </label>
                                       ) : (
-                                        <div className="flex items-center gap-2 bg-emerald-50 border border-emerald-300 rounded-lg px-2.5 py-1 text-xs">
-                                          <FileText className="w-3.5 h-3.5 text-[#006a4e] shrink-0" />
+                                        <div className="flex items-center gap-2 bg-blue-50 border border-blue-300 rounded-lg px-2.5 py-1 text-xs">
+                                          <FileText className="w-3.5 h-3.5 text-[#034EA2] shrink-0" />
                                           <span className="font-semibold text-gray-800 truncate max-w-[180px]" title={rowState.fileName}>
                                             {rowState.fileName}
                                           </span>
@@ -1829,7 +1940,7 @@ export default function App() {
               {/* Top Header Bar & Shift Info Pills */}
               <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-2 border-b border-slate-100">
                 <div className="flex items-start gap-3">
-                  <span className="w-3.5 h-3.5 rounded-full bg-[#006a4e] mt-1.5 shrink-0"></span>
+                  <span className="w-3.5 h-3.5 rounded-full bg-[#034EA2] mt-1.5 shrink-0"></span>
                   <div>
                     <h3 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
                       Review Summary: {data.info?.name}
@@ -1884,8 +1995,8 @@ export default function App() {
               <div className="border border-slate-200/90 rounded-2xl p-5 sm:p-6 bg-white shadow-2xs grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
                 {/* Segment 1: Month & Year Badge */}
                 <div className="lg:col-span-2 flex flex-col items-center justify-center text-center lg:border-r border-slate-200/80 pr-0 lg:pr-6 pb-4 lg:pb-0 border-b lg:border-b-0">
-                  <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-[#006a4e] flex items-center justify-center mb-2 shadow-2xs">
-                    <Calendar className="w-6 h-6 text-[#006a4e]" />
+                  <div className="w-12 h-12 rounded-2xl bg-blue-50 text-[#034EA2] flex items-center justify-center mb-2 shadow-2xs">
+                    <Calendar className="w-6 h-6 text-[#034EA2]" />
                   </div>
                   <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
                     {sysConfig?.month || 'August'}
@@ -1898,8 +2009,8 @@ export default function App() {
                 {/* Segment 2: Regular Overtime */}
                 <div className="lg:col-span-5 flex flex-col justify-between lg:border-r border-slate-200/80 px-0 lg:px-6 pb-4 lg:pb-0 border-b lg:border-b-0">
                   <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-[#006a4e] flex items-center justify-center shrink-0 shadow-2xs">
-                      <Briefcase className="w-5 h-5 text-[#006a4e]" />
+                    <div className="w-10 h-10 rounded-2xl bg-blue-50 text-[#034EA2] flex items-center justify-center shrink-0 shadow-2xs">
+                      <Briefcase className="w-5 h-5 text-[#034EA2]" />
                     </div>
                     <div>
                       <h4 className="text-sm sm:text-base font-bold text-slate-900">Regular Overtime</h4>
@@ -1909,7 +2020,7 @@ export default function App() {
 
                   <div className="grid grid-cols-2 items-center text-center">
                     <div>
-                      <span className="text-3xl sm:text-4xl font-black text-[#006a4e] tracking-tight block">
+                      <span className="text-3xl sm:text-4xl font-black text-[#034EA2] tracking-tight block">
                         {form.otDutyDays || '0'}
                       </span>
                       <span className="text-xs font-semibold text-slate-500 mt-1 block">Duty Days</span>
@@ -1922,7 +2033,7 @@ export default function App() {
                     </div>
                   </div>
 
-                  <div className="h-1.5 w-full bg-emerald-500 rounded-full mt-4"></div>
+                  <div className="h-1.5 w-full bg-[#034EA2] rounded-full mt-4"></div>
                   <input type="hidden" id="otDutyDays" value={form.otDutyDays} readOnly />
                   <input type="hidden" id="totalOtHours" value={form.totalOtHours} readOnly />
                 </div>
@@ -1996,7 +2107,7 @@ export default function App() {
               <div className="border border-slate-200/90 rounded-2xl p-4 sm:p-5 bg-white grid grid-cols-1 lg:grid-cols-12 gap-4 items-center no-print">
                 {/* 1. Terms Agreement */}
                 <div className="lg:col-span-4 h-full flex items-center">
-                  <label id="termsCheckboxLabel" className="flex items-center gap-3 p-3 bg-slate-50 hover:bg-emerald-50/40 border border-slate-200 hover:border-emerald-300 rounded-xl cursor-pointer w-full transition-all">
+                  <label id="termsCheckboxLabel" className="flex items-center gap-3 p-3 bg-slate-50 hover:bg-blue-50/50 border border-slate-200 hover:border-blue-300 rounded-xl cursor-pointer w-full transition-all">
                     <input 
                       type="checkbox" 
                       checked={agreed}
@@ -2010,7 +2121,7 @@ export default function App() {
                         }
                         setAgreed(e.target.checked);
                       }}
-                      className="w-5 h-5 text-[#006a4e] accent-[#006a4e] rounded cursor-pointer shrink-0" 
+                      className="w-5 h-5 text-[#034EA2] accent-[#034EA2] rounded cursor-pointer shrink-0" 
                     /> 
                     <span className="text-slate-800 uppercase tracking-tight text-xs font-bold select-none">
                       {t('termsText', "I have read and agreed to the above terms.")}
@@ -2031,7 +2142,7 @@ export default function App() {
                       value={form.supId}
                       onFocus={() => validateBeforeNavigating()}
                       onChange={(e) => setForm(prev => ({ ...prev, supId: e.target.value }))}
-                      className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-4 focus:ring-[#006a4e]/10 focus:border-[#006a4e] outline-none font-semibold text-slate-900 placeholder:text-slate-400 shadow-2xs transition-all" 
+                      className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-4 focus:ring-[#034EA2]/10 focus:border-[#034EA2] outline-none font-semibold text-slate-900 placeholder:text-slate-400 shadow-2xs transition-all" 
                       placeholder={t('supIdPlaceholder', "Enter Your ID")} 
                     />
                   </div>
@@ -2050,7 +2161,7 @@ export default function App() {
                       value={email}
                       onFocus={() => validateBeforeNavigating()}
                       onChange={(e) => setEmail(e.target.value)}
-                      className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-4 focus:ring-[#006a4e]/10 focus:border-[#006a4e] outline-none font-semibold text-slate-900 placeholder:text-slate-400 shadow-2xs transition-all" 
+                      className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-4 focus:ring-[#034EA2]/10 focus:border-[#034EA2] outline-none font-semibold text-slate-900 placeholder:text-slate-400 shadow-2xs transition-all" 
                       placeholder={t('supEmailPlaceholder', "supervisor@company.com")} 
                     />
                   </div>
@@ -2075,15 +2186,15 @@ export default function App() {
               <div className="pt-2 no-print space-y-2">
                 <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                   {/* Left: Print Prompt Banner */}
-                  <div className="flex-1 p-3.5 sm:p-4 bg-emerald-50/50 border border-emerald-200/90 rounded-2xl flex items-center gap-3.5 shadow-2xs">
-                    <div className="pr-3.5 border-r border-emerald-300/80 shrink-0">
-                      <Printer className="w-6 h-6 text-[#006a4e]" />
+                  <div className="flex-1 p-3.5 sm:p-4 bg-blue-50/60 border border-blue-200/90 rounded-2xl flex items-center gap-3.5 shadow-2xs">
+                    <div className="pr-3.5 border-r border-blue-200/80 shrink-0">
+                      <Printer className="w-6 h-6 text-[#034EA2]" />
                     </div>
                     <div>
-                      <p className="text-sm font-bold text-[#006a4e] leading-snug">
+                      <p className="text-sm font-bold text-[#034EA2] leading-snug">
                         {t('printPrompt1', "Please print the report before submit online.")}
                       </p>
-                      <p className="text-xs text-[#006a4e]/85 font-medium leading-snug mt-0.5">
+                      <p className="text-xs text-[#034EA2]/85 font-medium leading-snug mt-0.5">
                         {t('printPrompt2', "অনলাইনে রিপোর্টটি সাবমিট করার পূর্বে প্রিন্ট করে নিন")}
                       </p>
                     </div>
@@ -2110,7 +2221,7 @@ export default function App() {
                         type="button"
                         onClick={initiateOtp} 
                         disabled={otpLoading}
-                        className="px-7 py-2.5 sm:py-3 bg-[#006a4e] hover:bg-[#00543e] disabled:bg-slate-300 text-white font-bold text-sm rounded-xl shadow-xs hover:shadow transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+                        className="px-7 py-2.5 sm:py-3 bg-[#034EA2] hover:bg-[#023d80] disabled:bg-slate-300 text-white font-bold text-sm rounded-xl shadow-xs hover:shadow transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
                       >
                         <ShieldCheck className="w-4 h-4" />
                         <span>
@@ -2165,7 +2276,7 @@ export default function App() {
                 setEmail('');
                 setAgreed(false);
               }} 
-              className="bg-[#006a4e] text-white px-10 py-4 rounded-xl hover:bg-[#00523c] font-black text-lg shadow-xl transition transform hover:scale-105 cursor-pointer"
+              className="bg-[#034EA2] text-white px-10 py-4 rounded-xl hover:bg-[#023d80] font-black text-lg shadow-xl transition transform hover:scale-105 cursor-pointer"
             >
               {t('reviewAnotherBtn', "Review Another Employee")}
             </button>
@@ -2175,9 +2286,9 @@ export default function App() {
         {/* OTP VERIFICATION MODAL */}
         {showOtpModal && (
           <div className="fixed inset-0 bg-black/70 flex justify-center items-center z-50 backdrop-blur-xs no-print p-4">
-            <div className="bg-white p-6 sm:p-10 rounded-3xl text-center w-full max-w-md shadow-2xl border-t-8 border-[#006a4e]">
+            <div className="bg-white p-6 sm:p-10 rounded-3xl text-center w-full max-w-md shadow-2xl border-t-8 border-[#034EA2]">
               <div className="flex justify-center mb-3">
-                <div className="w-12 h-12 bg-emerald-100 rounded-full flex items-center justify-center text-[#006a4e]">
+                <div className="w-12 h-12 bg-blue-100 rounded-full flex items-center justify-center text-[#034EA2]">
                   <ShieldCheck className="w-7 h-7" />
                 </div>
               </div>
@@ -2194,7 +2305,7 @@ export default function App() {
                 type="text" 
                 value={otpInput}
                 onChange={(e) => setOtpInput(e.target.value.replace(/[^0-9]/g, ''))}
-                className="text-center text-4xl mb-6 font-black border-b-4 border-[#006a4e] focus:border-green-500 w-full py-2 tracking-[0.5em] outline-none text-[#006a4e]" 
+                className="text-center text-4xl mb-6 font-black border-b-4 border-[#034EA2] focus:border-blue-600 w-full py-2 tracking-[0.5em] outline-none text-[#034EA2]" 
                 maxLength={6} 
                 placeholder="000000" 
                 autoFocus
@@ -2207,7 +2318,7 @@ export default function App() {
               </div>
 
               {submissionFeedback && (
-                <div className="text-xs text-[#006a4e] font-semibold mb-4 animate-pulse">
+                <div className="text-xs text-[#034EA2] font-semibold mb-4 animate-pulse">
                   {submissionFeedback}
                 </div>
               )}
@@ -2224,7 +2335,7 @@ export default function App() {
                   type="button"
                   onClick={verifyOtpAndSubmit} 
                   disabled={timer === 0 || verifyLoading}
-                  className="flex-[2] py-3.5 bg-[#16a34a] text-white rounded-xl hover:bg-[#11803a] font-black text-sm shadow-lg disabled:opacity-50 uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
+                  className="flex-[2] py-3.5 bg-[#034EA2] text-white rounded-xl hover:bg-[#023d80] font-black text-sm shadow-lg disabled:opacity-50 uppercase tracking-wider flex items-center justify-center gap-2 cursor-pointer"
                 >
                   {verifyLoading ? (
                     <>
@@ -2242,7 +2353,7 @@ export default function App() {
                   <button
                     type="button"
                     onClick={initiateOtp}
-                    className="text-xs text-[#006a4e] font-bold hover:underline"
+                    className="text-xs text-[#034EA2] font-bold hover:underline"
                   >
                     Resend OTP Code
                   </button>
@@ -2251,6 +2362,13 @@ export default function App() {
             </div>
           </div>
         )}
+
+        {/* CREDIT FOOTER */}
+        <footer className="mt-8 pt-4 border-t border-gray-200/80 text-center no-print">
+          <p className="text-xs sm:text-sm font-semibold text-gray-500 tracking-wide">
+            Developed by <span className="text-[#034EA2] font-bold">Daffodil HR</span>
+          </p>
+        </footer>
 
       </div>
     </div>
