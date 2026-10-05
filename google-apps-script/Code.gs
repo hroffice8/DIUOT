@@ -24,16 +24,48 @@ function SETUP_PERMISSIONS() {
   } catch (e) {
     Logger.log("Drive folder warning: " + e.toString());
   }
+  try {
+    initEmployeeInformationSheets();
+    Logger.log("Employee Information sheets initialized successfully.");
+  } catch (sheetErr) {
+    Logger.log("Sheet init warning: " + sheetErr.toString());
+  }
   Logger.log("Permissions check completed for: " + email);
 }
 
+/**
+ * Custom UI Menu inside Google Spreadsheet
+ * Appears automatically when the Spreadsheet is opened.
+ */
+function onOpen() {
+  try {
+    const ui = SpreadsheetApp.getUi();
+    ui.createMenu("📋 DIU Overtime Portal")
+      .addItem("1. Create / Initialize Employee Information Sheets", "initEmployeeInformationSheets")
+      .addItem("2. Seed All Employees from Combined Report", "seedEmployeesFromCombinedReport")
+      .addSeparator()
+      .addItem("3. Run Setup Permissions & Drive Authorization", "SETUP_PERMISSIONS")
+      .addToUi();
+  } catch (e) {
+    Logger.log("onOpen menu notice: " + e.toString());
+  }
+}
+
 /* ==================================================
-   GET HANDLER (Search, Config, Duplicate Check)
+   GET HANDLER (Search, Config, Duplicate Check, Direct Work Area)
    ================================================== */
 function doGet(e) {
   try {
     const action = e.parameter.action;
     const password = e.parameter.password;
+
+    // 0. Sheet Initialization & Seeding Trigger (callable remotely)
+    if (action === "initSheets" || action === "setupSheets") {
+      return createJSON(initEmployeeInformationSheets());
+    }
+    if (action === "seedEmployees") {
+      return createJSON(seedEmployeesFromCombinedReport());
+    }
 
     // 1. Fetch System Config (from "Month and other details" or "Config")
     if (action === "getConfig") {
@@ -53,7 +85,12 @@ function doGet(e) {
       return createJSON(handleDuplicateCheck(empId));
     }
 
-    // 4. Admin Database List
+    // 4. Direct Work Area update via GET (fallback)
+    if (action === "updateWorkArea" || action === "saveWorkArea") {
+      return createJSON(handleDirectWorkAreaUpdate(e.parameter));
+    }
+
+    // 5. Admin Database List
     if (action === "getSheetsList") {
       if (password !== ADMIN_KEY) return createJSON({ success: false, message: "Invalid Key" });
       const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -88,7 +125,12 @@ function doPost(e) {
       return createJSON(verifyAndUpsertWithDrive(data));
     }
 
-    // 3. Admin Actions (Require Password)
+    // 3. Update Work Area directly from UI button
+    if (data.action === "updateWorkArea" || data.action === "saveWorkArea") {
+      return createJSON(handleDirectWorkAreaUpdate(data));
+    }
+
+    // 4. Admin Actions (Require Password)
     if (data.password !== ADMIN_KEY) {
       return createJSON({ success: false, message: "Unauthorized" });
     }
@@ -165,6 +207,9 @@ function handleSearch(empId, monthYear) {
   if (!empId) return { found: false, message: "ID is required" };
   const targetId = String(empId).trim();
 
+  // Automatically guarantee that Employee Information & Audit sheets exist
+  try { initEmployeeInformationSheets(); } catch(e) {}
+
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   const tz = Session.getScriptTimeZone();
   
@@ -237,13 +282,79 @@ function handleSearch(empId, monthYear) {
     dateRange = records[0].date + " to " + records[records.length - 1].date;
   }
 
+  // Look up Work Area & Approval Rules from "Employee Information" sheet
+  let workArea = "";
+  let workAreaLastUpdated = "";
+  let approvalRules = {
+    maxOtHoursPerDay: 3,
+    maxOtDaysPerWeek: 4,
+    holidayDutyPermission: "YES",
+    weekendDutyPermission: "YES",
+    dutyPermissionType: "BOTH",
+    specialRestrictions: "None"
+  };
+
+  try {
+    const empInfoSheet = ss.getSheetByName("Employee Information") || 
+                         ss.getSheetByName("Employees") || 
+                         ss.getSheetByName("Employee_Info");
+                         
+    if (empInfoSheet && empInfoSheet.getLastRow() > 1) {
+      const empData = empInfoSheet.getDataRange().getValues();
+      const headers = empData[0].map(function(h) { return String(h || "").trim().toLowerCase(); });
+      
+      const colId = findColIndex(headers, ["employee id", "empid", "id"]);
+      const colWorkArea = findColIndex(headers, ["work area", "workarea", "location", "office location"]);
+      const colUpdated = findColIndex(headers, ["last updated", "updated at", "updated date", "timestamp"]);
+      const colMaxOtHours = findColIndex(headers, ["max daily ot", "max ot hours", "max ot hrs"]);
+      const colMaxOtDays = findColIndex(headers, ["max weekly ot", "max ot days", "max days per week"]);
+      const colHolPerm = findColIndex(headers, ["holiday permission", "holiday duty permission", "holiday duty"]);
+      const colWkndPerm = findColIndex(headers, ["weekend permission", "weekend duty permission", "weekend duty"]);
+      const colPermType = findColIndex(headers, ["duty permission type", "permission type"]);
+
+      for (let i = 1; i < empData.length; i++) {
+        const row = empData[i];
+        const rowId = colId !== -1 ? String(row[colId]).trim() : String(row[0]).trim();
+        if (rowId === targetId) {
+          if (colWorkArea !== -1 && row[colWorkArea]) {
+            workArea = String(row[colWorkArea]).trim();
+          }
+          if (colUpdated !== -1 && row[colUpdated]) {
+            workAreaLastUpdated = formatDate(row[colUpdated]);
+          }
+          if (colMaxOtHours !== -1 && row[colMaxOtHours]) {
+            approvalRules.maxOtHoursPerDay = Number(row[colMaxOtHours]) || 3;
+          }
+          if (colMaxOtDays !== -1 && row[colMaxOtDays]) {
+            approvalRules.maxOtDaysPerWeek = Number(row[colMaxOtDays]) || 4;
+          }
+          if (colHolPerm !== -1 && row[colHolPerm]) {
+            approvalRules.holidayDutyPermission = String(row[colHolPerm]).trim();
+          }
+          if (colWkndPerm !== -1 && row[colWkndPerm]) {
+            approvalRules.weekendDutyPermission = String(row[colWkndPerm]).trim();
+          }
+          if (colPermType !== -1 && row[colPermType]) {
+            approvalRules.dutyPermissionType = String(row[colPermType]).trim();
+          }
+          break;
+        }
+      }
+    }
+  } catch (lookupErr) {
+    Logger.log("Employee Information lookup error: " + lookupErr.toString());
+  }
+
   return { 
     found: true, 
     info: { 
       id: String(first[0]), 
       name: String(first[1] || ""), 
       designation: String(first[2] || ""), 
-      department: String(first[3] || "") 
+      department: String(first[3] || ""),
+      workArea: workArea,
+      workAreaLastUpdated: workAreaLastUpdated,
+      approvalRules: approvalRules
     }, 
     records: records, 
     monthName: monthYear || "Report",
@@ -518,6 +629,118 @@ function verifyAndUpsertWithDrive(data) {
     }
   }
 
+  // 4. Update / Save Work Area to "Employee Information" & Log Changes to "Work_Area_Audit_Log"
+  const newWorkArea = String(formData.workArea || "").trim();
+  const empName = String(formData.empName || "").trim();
+  const empDesig = String(formData.designation || "").trim();
+  const empDept = String(formData.department || "").trim();
+  const supId = String(formData.supId || "").trim();
+
+  try {
+    let empInfoSheet = ss.getSheetByName("Employee Information");
+    if (!empInfoSheet) {
+      empInfoSheet = ss.insertSheet("Employee Information");
+      empInfoSheet.appendRow([
+        "Employee ID", 
+        "Name", 
+        "Designation", 
+        "Department", 
+        "Work Area", 
+        "Last Updated", 
+        "Updated By",
+        "Max Daily OT Hours",
+        "Max Weekly OT Days",
+        "Holiday Permission",
+        "Weekend Permission",
+        "Duty Permission Type",
+        "Approval Notes"
+      ]);
+      empInfoSheet.getRange("A1:M1").setFontWeight("bold").setBackground("#e6f4ea");
+    }
+
+    let auditSheet = ss.getSheetByName("Work_Area_Audit_Log");
+    if (!auditSheet) {
+      auditSheet = ss.insertSheet("Work_Area_Audit_Log");
+      auditSheet.appendRow([
+        "Timestamp", 
+        "Employee ID", 
+        "Employee Name", 
+        "Previous Work Area", 
+        "Updated Work Area", 
+        "Updated Date/Time", 
+        "Updated By (Supervisor ID)", 
+        "Supervisor Email"
+      ]);
+      auditSheet.getRange("A1:H1").setFontWeight("bold").setBackground("#fce8e6");
+    }
+
+    const empInfoData = empInfoSheet.getDataRange().getValues();
+    let empFoundRow = -1;
+    let prevWorkArea = "";
+
+    for (let r = 1; r < empInfoData.length; r++) {
+      if (String(empInfoData[r][0]).trim() === empId) {
+        empFoundRow = r + 1;
+        prevWorkArea = String(empInfoData[r][4] || "").trim();
+        break;
+      }
+    }
+
+    const now = new Date();
+
+    if (empFoundRow !== -1) {
+      // If work area changed or was provided
+      if (newWorkArea && newWorkArea !== prevWorkArea) {
+        auditSheet.appendRow([
+          now,
+          empId,
+          empName || empInfoData[empFoundRow - 1][1] || "",
+          prevWorkArea || "None",
+          newWorkArea,
+          now,
+          supId,
+          email
+        ]);
+        
+        empInfoSheet.getRange(empFoundRow, 5).setValue(newWorkArea);
+        empInfoSheet.getRange(empFoundRow, 6).setValue(now);
+        empInfoSheet.getRange(empFoundRow, 7).setValue(supId);
+      }
+    } else {
+      // New Employee Entry in Employee Information
+      empInfoSheet.appendRow([
+        empId,
+        empName,
+        empDesig,
+        empDept,
+        newWorkArea,
+        now,
+        supId,
+        3,         // Default Max Daily OT Hours
+        4,         // Default Max Weekly OT Days
+        "YES",     // Default Holiday Permission
+        "YES",     // Default Weekend Permission
+        "BOTH",    // Default Duty Permission Type
+        "Initial Entry via Review Portal"
+      ]);
+
+      if (newWorkArea) {
+        auditSheet.appendRow([
+          now,
+          empId,
+          empName,
+          "N/A (Initial Entry)",
+          newWorkArea,
+          now,
+          supId,
+          email
+        ]);
+      }
+    }
+  } catch (workAreaErr) {
+    Logger.log("Work Area update error: " + workAreaErr.toString());
+  }
+
   if (duplicateRowIndex !== -1) {
     targetSheet.getRange(duplicateRowIndex, 1, 1, newRowData.length).setValues([newRowData]);
     return { 
@@ -536,8 +759,335 @@ function verifyAndUpsertWithDrive(data) {
 }
 
 /* ==================================================
+   EMPLOYEE INFORMATION & AUDIT SHEET INITIALIZER
+   Ensures required sheets exist in spreadsheet automatically
+   ================================================== */
+function initEmployeeInformationSheets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  // 1. Employee Information Sheet
+  let empSheet = ss.getSheetByName("Employee Information");
+  let isNewEmpSheet = false;
+
+  if (!empSheet) {
+    empSheet = ss.insertSheet("Employee Information");
+    isNewEmpSheet = true;
+  }
+
+  if (empSheet.getLastRow() === 0) {
+    empSheet.appendRow([
+      "Employee ID", 
+      "Name", 
+      "Designation", 
+      "Department", 
+      "Work Area", 
+      "Last Updated", 
+      "Updated By",
+      "Max Daily OT Hours",
+      "Max Weekly OT Days",
+      "Holiday Permission",
+      "Weekend Permission",
+      "Duty Permission Type",
+      "Approval Notes"
+    ]);
+    const headerRange = empSheet.getRange("A1:M1");
+    headerRange.setFontWeight("bold")
+               .setBackground("#e6f4ea")
+               .setFontColor("#006a4e");
+    empSheet.setFrozenRows(1);
+    
+    // Set user-friendly column widths
+    try {
+      empSheet.setColumnWidth(1, 120); // ID
+      empSheet.setColumnWidth(2, 180); // Name
+      empSheet.setColumnWidth(3, 160); // Designation
+      empSheet.setColumnWidth(4, 160); // Department
+      empSheet.setColumnWidth(5, 260); // Work Area
+      empSheet.setColumnWidth(6, 140); // Last Updated
+      empSheet.setColumnWidth(7, 120); // Updated By
+      empSheet.setColumnWidth(8, 130); // Max Daily OT
+      empSheet.setColumnWidth(9, 130); // Max Weekly OT
+      empSheet.setColumnWidth(10, 130); // Holiday Perm
+      empSheet.setColumnWidth(11, 130); // Weekend Perm
+      empSheet.setColumnWidth(12, 140); // Permission Type
+      empSheet.setColumnWidth(13, 220); // Notes
+    } catch(e) {}
+    
+    isNewEmpSheet = true;
+  }
+
+  // 2. Work Area Audit Log Sheet
+  let auditSheet = ss.getSheetByName("Work_Area_Audit_Log");
+  if (!auditSheet) {
+    auditSheet = ss.insertSheet("Work_Area_Audit_Log");
+  }
+
+  if (auditSheet.getLastRow() === 0) {
+    auditSheet.appendRow([
+      "Timestamp", 
+      "Employee ID", 
+      "Employee Name", 
+      "Previous Work Area", 
+      "Updated Work Area", 
+      "Updated Date/Time", 
+      "Updated By (Supervisor ID)", 
+      "Supervisor Email"
+    ]);
+    const auditHeader = auditSheet.getRange("A1:H1");
+    auditHeader.setFontWeight("bold")
+               .setBackground("#fce8e6")
+               .setFontColor("#b71c1c");
+    auditSheet.setFrozenRows(1);
+    try {
+      auditSheet.setColumnWidth(1, 150); // Timestamp
+      auditSheet.setColumnWidth(2, 120); // Employee ID
+      auditSheet.setColumnWidth(3, 180); // Employee Name
+      auditSheet.setColumnWidth(4, 220); // Previous Work Area
+      auditSheet.setColumnWidth(5, 220); // Updated Work Area
+      auditSheet.setColumnWidth(6, 140); // Updated Date/Time
+      auditSheet.setColumnWidth(7, 130); // Updated By
+      auditSheet.setColumnWidth(8, 180); // Supervisor Email
+    } catch(e) {}
+  }
+
+  // 3. Auto-seed employees from Combined report if sheet is brand new
+  if (isNewEmpSheet && empSheet.getLastRow() <= 1) {
+    try {
+      seedEmployeesFromCombinedReport();
+    } catch (seedErr) {
+      Logger.log("Auto-seed error on init: " + seedErr.toString());
+    }
+  }
+
+  return { 
+    success: true, 
+    empSheet: empSheet.getName(), 
+    auditSheet: auditSheet.getName(),
+    message: "Employee Information and Work_Area_Audit_Log sheets are ready." 
+  };
+}
+
+/**
+ * Reads "Combined report" and seeds all distinct employees into "Employee Information"
+ */
+function seedEmployeesFromCombinedReport() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const combinedSheet = ss.getSheetByName("Combined report");
+  if (!combinedSheet) {
+    return { success: false, message: "Combined report sheet not found." };
+  }
+
+  let empSheet = ss.getSheetByName("Employee Information");
+  if (!empSheet || empSheet.getLastRow() === 0) {
+    initEmployeeInformationSheets();
+    empSheet = ss.getSheetByName("Employee Information");
+  }
+
+  const combinedData = combinedSheet.getDataRange().getValues();
+  if (combinedData.length <= 1) {
+    return { success: false, message: "No data rows in Combined report." };
+  }
+
+  // Detect column indexes in Combined report
+  const cHeaders = combinedData[0].map(function(h) { return String(h || "").trim().toLowerCase(); });
+  const colId = findColIndex(cHeaders, ["id", "employee id", "empid"]);
+  const colName = findColIndex(cHeaders, ["name", "employee name"]);
+  const colDesig = findColIndex(cHeaders, ["designation", "desig"]);
+  const colDept = findColIndex(cHeaders, ["department", "dept"]);
+
+  const idIdx = colId !== -1 ? colId : 0;
+  const nameIdx = colName !== -1 ? colName : 1;
+  const desigIdx = colDesig !== -1 ? colDesig : 2;
+  const deptIdx = colDept !== -1 ? colDept : 3;
+
+  // Existing IDs in Employee Information
+  const empData = empSheet.getDataRange().getValues();
+  const existingIds = {};
+  for (let r = 1; r < empData.length; r++) {
+    const eid = String(empData[r][0] || "").trim();
+    if (eid) existingIds[eid] = true;
+  }
+
+  // Extract unique employees
+  const newEmployeesMap = {};
+  for (let r = 1; r < combinedData.length; r++) {
+    const row = combinedData[r];
+    const eid = String(row[idIdx] || "").trim();
+    if (eid && !existingIds[eid] && !newEmployeesMap[eid]) {
+      newEmployeesMap[eid] = {
+        id: eid,
+        name: String(row[nameIdx] || "").trim(),
+        designation: String(row[desigIdx] || "").trim(),
+        department: String(row[deptIdx] || "").trim()
+      };
+    }
+  }
+
+  const newRows = [];
+  const now = new Date();
+  for (const eid in newEmployeesMap) {
+    const emp = newEmployeesMap[eid];
+    newRows.push([
+      emp.id,
+      emp.name,
+      emp.designation,
+      emp.department,
+      "",                 // Work Area (empty initially, to be filled by supervisor)
+      now,                // Last Updated
+      "Auto-Import",      // Updated By
+      3,                  // Default Max Daily OT Hours
+      4,                  // Default Max Weekly OT Days
+      "YES",              // Default Holiday Permission
+      "YES",              // Default Weekend Permission
+      "BOTH",             // Default Duty Permission Type
+      "Imported from Combined report"
+    ]);
+  }
+
+  if (newRows.length > 0) {
+    const startRow = empSheet.getLastRow() + 1;
+    empSheet.getRange(startRow, 1, newRows.length, newRows[0].length).setValues(newRows);
+  }
+
+  return {
+    success: true,
+    addedCount: newRows.length,
+    totalCount: empSheet.getLastRow() - 1,
+    message: "Successfully seeded " + newRows.length + " employee(s) into Employee Information sheet."
+  };
+}
+
+/* ==================================================
+   DIRECT WORK AREA UPDATE HANDLER
+   Allows immediate save/change of Work Area from the UI button
+   ================================================== */
+function handleDirectWorkAreaUpdate(params) {
+  const empId = String(params.empId || params.id || "").trim();
+  const newWorkArea = String(params.workArea || "").trim();
+  const supId = String(params.supId || "Supervisor").trim();
+  const email = String(params.email || "N/A").trim();
+  let empName = String(params.empName || "").trim();
+  let empDesig = String(params.designation || "").trim();
+  let empDept = String(params.department || "").trim();
+
+  if (!empId) {
+    return { success: false, message: "Employee ID is required" };
+  }
+  if (!newWorkArea) {
+    return { success: false, message: "Work Area location cannot be empty" };
+  }
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheets = initEmployeeInformationSheets();
+  const empInfoSheet = sheets.empSheet;
+  const auditSheet = sheets.auditSheet;
+
+  const empData = empInfoSheet.getDataRange().getValues();
+  let empFoundRow = -1;
+  let prevWorkArea = "";
+
+  for (let r = 1; r < empData.length; r++) {
+    if (String(empData[r][0]).trim() === empId) {
+      empFoundRow = r + 1;
+      empName = empData[r][1] || empName;
+      empDesig = empData[r][2] || empDesig;
+      empDept = empData[r][3] || empDept;
+      prevWorkArea = String(empData[r][4] || "").trim();
+      break;
+    }
+  }
+
+  // If name/desig missing, try to lookup from Combined report
+  if (!empName || !empDesig) {
+    const combinedSheet = ss.getSheetByName("Combined report");
+    if (combinedSheet) {
+      const cData = combinedSheet.getDataRange().getValues();
+      for (let i = 1; i < cData.length; i++) {
+        if (String(cData[i][0]).trim() === empId) {
+          empName = String(cData[i][1] || empName);
+          empDesig = String(cData[i][2] || empDesig);
+          empDept = String(cData[i][3] || empDept);
+          break;
+        }
+      }
+    }
+  }
+
+  const now = new Date();
+  const tz = Session.getScriptTimeZone();
+  const formattedDate = Utilities.formatDate(now, tz, "dd-MMM-yyyy HH:mm");
+
+  if (empFoundRow !== -1) {
+    // Record audit history only if location actually changed
+    if (newWorkArea !== prevWorkArea) {
+      auditSheet.appendRow([
+        now,
+        empId,
+        empName || "Employee",
+        prevWorkArea || "None",
+        newWorkArea,
+        now,
+        supId,
+        email
+      ]);
+    }
+
+    empInfoSheet.getRange(empFoundRow, 5).setValue(newWorkArea);
+    empInfoSheet.getRange(empFoundRow, 6).setValue(now);
+    if (supId) empInfoSheet.getRange(empFoundRow, 7).setValue(supId);
+  } else {
+    // Append new employee record to Employee Information sheet
+    empInfoSheet.appendRow([
+      empId,
+      empName,
+      empDesig,
+      empDept,
+      newWorkArea,
+      now,
+      supId,
+      3,       // Default Max Daily OT Hours
+      4,       // Default Max Weekly OT Days
+      "YES",   // Default Holiday Permission
+      "YES",   // Default Weekend Permission
+      "BOTH",  // Default Duty Permission Type
+      "Created via Direct Location Submit"
+    ]);
+
+    auditSheet.appendRow([
+      now,
+      empId,
+      empName || "Employee",
+      "N/A (Initial Entry)",
+      newWorkArea,
+      now,
+      supId,
+      email
+    ]);
+  }
+
+  return {
+    success: true,
+    message: "Work Area updated successfully in Employee Information sheet.",
+    workArea: newWorkArea,
+    lastUpdated: formattedDate
+  };
+}
+
+/* ==================================================
    UTILITY HELPERS
    ================================================== */
+function findColIndex(headers, possibleNames) {
+  for (let i = 0; i < headers.length; i++) {
+    const h = String(headers[i] || "").trim().toLowerCase();
+    for (let j = 0; j < possibleNames.length; j++) {
+      if (h === possibleNames[j] || h.includes(possibleNames[j])) {
+        return i;
+      }
+    }
+  }
+  return -1;
+}
+
 function createJSON(obj) { 
   return ContentService.createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON); 

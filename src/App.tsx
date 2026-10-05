@@ -16,14 +16,31 @@ import {
   Calendar, 
   ExternalLink, 
   ShieldCheck, 
-  FileCheck
+  FileCheck,
+  MapPin,
+  Edit3,
+  Check,
+  Loader2,
+  Briefcase,
+  CalendarDays,
+  Mail,
+  User,
+  Pin
 } from 'lucide-react';
 
 // --- CONSTANTS & CONFIGURATION ---
 const API_URL = "https://script.google.com/macros/s/AKfycbyGvPes-Dg7Mzh2_Sr_NbZ_AA3fD2NQTka5n9EeLAQ23kFHorDMoWxAdthLStwHa3H0XA/exec"; 
-const APP_TITLE = "DIU Overtime Automation Engine";
+const APP_TITLE = "Overtime Automation Engine";
 const TUTORIAL_URL = "https://drive.google.com/file/d/1pO-BADnvdbjUqSkUPrlLnFG1EeQJxbZl/view";
 const DRIVE_FOLDER_ID = "1eUApmny3ftp235GpW7zoN23KeV879ACA";
+
+/**
+ * FEATURE FLAG: Employee Approval Validation
+ * Default: false (as per specification).
+ * When complete employee approval rules data is ready in the future,
+ * changing this flag to `true` activates live approval validation.
+ */
+export const ENABLE_EMPLOYEE_APPROVAL_VALIDATION = false;
 
 // --- TYPES ---
 export interface AttendanceRecord {
@@ -37,22 +54,38 @@ export interface AttendanceRecord {
   status: string;
 }
 
+export interface EmployeeApprovalRules {
+  maxOtHoursPerDay?: number | null; // e.g. 2 or 3 hours
+  maxOtDaysPerWeek?: number | null; // e.g. 3 or 4 days
+  holidayDutyPermission?: 'YES' | 'NO' | boolean | string | null;
+  weekendDutyPermission?: 'YES' | 'NO' | boolean | string | null;
+  dutyPermissionType?: 'BOTH' | 'HOLIDAY_ONLY' | 'WEEKEND_ONLY' | 'NONE' | string | null;
+  specialRestrictions?: string | null;
+}
+
+export interface EmployeeInfo {
+  id: string;
+  name: string;
+  designation: string;
+  department: string;
+  workArea?: string;
+  workAreaLastUpdated?: string;
+  approvalRules?: EmployeeApprovalRules;
+}
+
 export interface SearchResult {
   found: boolean;
-  info?: {
-    id: string;
-    name: string;
-    designation: string;
-    department: string;
-  };
+  info?: EmployeeInfo;
   records?: AttendanceRecord[];
   monthName?: string;
   dateRange?: string;
+  message?: string;
 }
 
 export interface FormData {
   empId: string;
   supId: string;
+  workArea?: string;
   otDutyDays: string;
   totalOtHours: string;
   totalHolidayDays: string;
@@ -328,6 +361,107 @@ export function validateOtAgainstPunch(
   }
 }
 
+/**
+ * Future-Ready Employee Approval Rules Validation Function
+ * Evaluates:
+ * - Maximum permitted OT hours per day
+ * - Maximum permitted OT days per week
+ * - Holiday duty permission
+ * - Weekend duty permission
+ * - Duty Permission Type (BOTH | HOLIDAY_ONLY | WEEKEND_ONLY | NONE)
+ *
+ * NOTE: As per specifications, this returns { isValid: true, errors: [] }
+ * while ENABLE_EMPLOYEE_APPROVAL_VALIDATION is set to false.
+ */
+export interface ApprovalValidationResult {
+  isValid: boolean;
+  errors: string[];
+}
+
+export function validateEmployeeApprovalRules(
+  rules: EmployeeApprovalRules | undefined,
+  selectedDates: { date: string; status: string; otHours: string }[]
+): ApprovalValidationResult {
+  if (!ENABLE_EMPLOYEE_APPROVAL_VALIDATION || !rules) {
+    return { isValid: true, errors: [] };
+  }
+
+  const errors: string[] = [];
+
+  // 1. Max daily OT hours check
+  if (rules.maxOtHoursPerDay && rules.maxOtHoursPerDay > 0) {
+    const maxMinutes = rules.maxOtHoursPerDay * 60;
+    for (const item of selectedDates) {
+      const minutes = parseDurationToMinutes(item.otHours);
+      if (minutes !== null && minutes > maxMinutes) {
+        errors.push(
+          `Date ${item.date}: Daily overtime (${item.otHours} hrs) exceeds approved maximum limit of ${rules.maxOtHoursPerDay} hours.`
+        );
+      }
+    }
+  }
+
+  // 2. Weekend and Holiday Duty Permissions
+  const permType = String(rules.dutyPermissionType || 'BOTH').toUpperCase().trim();
+  const holPerm = String(rules.holidayDutyPermission || 'YES').toUpperCase().trim();
+  const wkndPerm = String(rules.weekendDutyPermission || 'YES').toUpperCase().trim();
+
+  for (const item of selectedDates) {
+    const isWknd = item.status?.toUpperCase()?.includes('WEEKEND');
+    const isHol = item.status?.toUpperCase()?.includes('HOLIDAY');
+
+    if (isWknd) {
+      if (wkndPerm === 'NO' || permType === 'HOLIDAY_ONLY' || permType === 'NONE') {
+        errors.push(`Date ${item.date}: Weekend duty is not approved for this employee.`);
+      }
+    }
+
+    if (isHol) {
+      if (holPerm === 'NO' || permType === 'WEEKEND_ONLY' || permType === 'NONE') {
+        errors.push(`Date ${item.date}: Holiday duty is not approved for this employee.`);
+      }
+    }
+  }
+
+  // 3. Weekly permitted OT days check
+  if (rules.maxOtDaysPerWeek && rules.maxOtDaysPerWeek > 0) {
+    const weekCountMap: { [weekKey: string]: number } = {};
+    for (const item of selectedDates) {
+      try {
+        const d = new Date(item.date);
+        if (!isNaN(d.getTime())) {
+          const target = new Date(d.valueOf());
+          const dayNr = (d.getDay() + 6) % 7;
+          target.setDate(target.getDate() - dayNr + 3);
+          const firstThursday = target.valueOf();
+          target.setMonth(0, 1);
+          if (target.getDay() !== 4) {
+            target.setMonth(0, 1 + ((4 - target.getDay()) + 7) % 7);
+          }
+          const weekNr = 1 + Math.ceil((firstThursday - target.valueOf()) / 604800000);
+          const key = `W${weekNr}-${d.getFullYear()}`;
+          weekCountMap[key] = (weekCountMap[key] || 0) + 1;
+        }
+      } catch (e) {
+        // ignore date grouping error
+      }
+    }
+
+    for (const [weekKey, count] of Object.entries(weekCountMap)) {
+      if (count > rules.maxOtDaysPerWeek) {
+        errors.push(
+          `Week ${weekKey}: Selected days (${count} days) exceed approved weekly maximum of ${rules.maxOtDaysPerWeek} days.`
+        );
+      }
+    }
+  }
+
+  return {
+    isValid: errors.length === 0,
+    errors
+  };
+}
+
 // --- MAIN COMPONENT ---
 export default function App() {
   // Application View States
@@ -335,6 +469,13 @@ export default function App() {
   const [empId, setEmpId] = useState('');
   const [data, setData] = useState<SearchResult | null>(null);
   
+  // Work Area state (persistent employee information)
+  const [workArea, setWorkArea] = useState<string>('');
+  const [workAreaLastUpdated, setWorkAreaLastUpdated] = useState<string>('');
+  const [isEditingWorkArea, setIsEditingWorkArea] = useState<boolean>(false);
+  const [workAreaLoading, setWorkAreaLoading] = useState<boolean>(false);
+  const [workAreaSuccessMsg, setWorkAreaSuccessMsg] = useState<string | null>(null);
+
   // System Config
   const [sysConfig, setSysConfig] = useState<SystemConfig | null>(null);
 
@@ -345,6 +486,7 @@ export default function App() {
   const [form, setForm] = useState<FormData>({
     empId: '',
     supId: '',
+    workArea: '',
     otDutyDays: '0',
     totalOtHours: '0:00',
     totalHolidayDays: '0',
@@ -470,6 +612,11 @@ export default function App() {
       }
 
       setData(res);
+      const savedArea = res.info?.workArea || '';
+      setWorkArea(savedArea);
+      setWorkAreaLastUpdated(res.info?.workAreaLastUpdated || '');
+      setIsEditingWorkArea(!savedArea.trim());
+      setWorkAreaSuccessMsg(null);
 
       // Initialize date states with all checkboxes unchecked and empty OT hours
       const initialStates: Record<string, DateSelectionState> = {};
@@ -502,6 +649,7 @@ export default function App() {
       setForm({
         empId: res.info?.id || empId.trim(),
         supId: '',
+        workArea: res.info?.workArea || '',
         otDutyDays: '0',
         totalOtHours: '0:00',
         totalHolidayDays: '0',
@@ -863,6 +1011,19 @@ export default function App() {
       return false;
     }
 
+    // Future-Ready Employee Approval Live Validation
+    // Disabled by default (ENABLE_EMPLOYEE_APPROVAL_VALIDATION = false)
+    if (ENABLE_EMPLOYEE_APPROVAL_VALIDATION && data?.info?.approvalRules) {
+      const approvalCheck = validateEmployeeApprovalRules(
+        data.info.approvalRules,
+        selectedList.map(s => ({ date: s.date, status: s.status, otHours: s.otHours }))
+      );
+      if (!approvalCheck.isValid) {
+        alert("⚠️ Employee Approval Validation Error:\n\n" + approvalCheck.errors.join("\n"));
+        return false;
+      }
+    }
+
     return true;
   };
 
@@ -956,7 +1117,11 @@ export default function App() {
         otp: otpInput.trim(),
         formData: {
           empId: form.empId,
+          empName: data?.info?.name || '',
+          designation: data?.info?.designation || '',
+          department: data?.info?.department || '',
           supId: form.supId.trim(),
+          workArea: workArea.trim(),
           otDutyDays: form.otDutyDays,
           totalOtHours: form.totalOtHours,
           totalHolidayDays: form.totalHolidayDays,
@@ -989,6 +1154,70 @@ export default function App() {
       setVerifyLoading(false);
       setSubmissionFeedback(null);
       alert(t('errorVerification', "Verification Failed: ") + e.message);
+    }
+  };
+
+  // Immediate direct save / update of Work Area to Employee Information sheet
+  const handleSaveWorkAreaDirect = async () => {
+    if (!workArea.trim()) {
+      alert("অনুগ্রহ করে কর্মীর Work Area বা লোকেশন উল্লেখ করুন।");
+      return;
+    }
+    if (!isApiConfigured()) {
+      alert("API is not configured properly.");
+      return;
+    }
+
+    setWorkAreaLoading(true);
+    setWorkAreaSuccessMsg(null);
+
+    const payload = {
+      action: 'updateWorkArea',
+      empId: form.empId || data?.info?.id || empId.trim(),
+      workArea: workArea.trim(),
+      empName: data?.info?.name || '',
+      designation: data?.info?.designation || '',
+      department: data?.info?.department || '',
+      supId: form.supId.trim() || 'Supervisor',
+      email: email.trim() || 'N/A'
+    };
+
+    try {
+      let res: any = null;
+      try {
+        const response = await fetch(API_URL, {
+          method: 'POST',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify(payload)
+        });
+        const text = await response.text();
+        res = JSON.parse(text);
+      } catch (postErr) {
+        // Fallback: try GET request
+        const getUrl = `${API_URL}?action=updateWorkArea&empId=${encodeURIComponent(payload.empId)}&workArea=${encodeURIComponent(payload.workArea)}&empName=${encodeURIComponent(payload.empName)}&supId=${encodeURIComponent(payload.supId)}`;
+        const fallbackRes = await fetch(getUrl);
+        const fallbackText = await fallbackRes.text();
+        res = JSON.parse(fallbackText);
+      }
+
+      setWorkAreaLoading(false);
+      if (res && res.success) {
+        const updateTimeStr = res.lastUpdated || new Date().toLocaleString('en-GB');
+        setWorkAreaLastUpdated(updateTimeStr);
+        if (data && data.info) {
+          data.info.workArea = workArea.trim();
+          data.info.workAreaLastUpdated = updateTimeStr;
+        }
+        setForm(prev => ({ ...prev, workArea: workArea.trim() }));
+        setIsEditingWorkArea(false);
+        setWorkAreaSuccessMsg("✓ Work Area successfully saved to Employee Information sheet.");
+        setTimeout(() => setWorkAreaSuccessMsg(null), 4000);
+      } else {
+        alert("❌ " + (res?.message || "Failed to save Work Area."));
+      }
+    } catch (err: any) {
+      setWorkAreaLoading(false);
+      alert("Error saving Work Area: " + err.message);
     }
   };
 
@@ -1033,7 +1262,7 @@ export default function App() {
           <div className="mb-6">
             <div className="text-center border-b-4 border-[#006a4e] pb-4 mb-4">
               <div className="flex items-center justify-center no-print mb-2">
-                <span className="text-xs font-bold uppercase tracking-wider text-emerald-800 bg-emerald-100 px-3 py-1 rounded-full">
+                <span className="text-xl md:text-2xl font-bold uppercase tracking-wide text-emerald-800 bg-emerald-100 px-6 py-2 rounded-lg">
                   Daffodil International University
                 </span>
               </div>
@@ -1044,7 +1273,7 @@ export default function App() {
                   : t('appTitle', APP_TITLE)}
               </h1>
               <p className="text-xs sm:text-sm text-gray-500 mt-1 font-semibold">
-                HR Overtime Verification, Punch Harmonization & Document Submission
+                 
               </p>
             </div>
           </div>
@@ -1059,7 +1288,7 @@ export default function App() {
                   type="text" 
                   value={empId}
                   onChange={(e) => setEmpId(e.target.value)}
-                  placeholder={t('searchPlaceholder', "Enter Employee ID (e.g. 710002971)")} 
+                  placeholder={t('searchPlaceholder', "Enter Employee ID (e.g. 710000000)")} 
                   className="w-full p-4 pl-12 border-2 border-gray-200 rounded-xl focus:outline-none focus:ring-4 focus:ring-[#006a4e]/20 focus:border-[#006a4e] transition-all text-lg text-center font-bold"
                   onKeyDown={(e) => e.key === 'Enter' && handleSearch()}
                   autoFocus
@@ -1145,6 +1374,123 @@ export default function App() {
                 <span className="text-gray-500 block text-xs uppercase font-bold">{t('lblDept', "Department")}</span>
                 <strong className="text-gray-800">{data.info?.department}</strong>
               </div>
+
+              {/* WORK AREA (1-LINE BOX WITH SUBMIT & CHANGE BUTTON) */}
+              <div className="col-span-2 md:col-span-4 pt-3 border-t border-[#006a4e]/15 no-print">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-1.5">
+                  <label htmlFor="workAreaInput" className="text-xs sm:text-sm font-extrabold text-gray-800 flex items-center gap-1.5">
+                    <MapPin className="w-4 h-4 text-[#006a4e]" />
+                    <span>Work Area</span>
+                  </label>
+                  {workAreaLastUpdated && (
+                    <span className="text-[11px] text-[#006a4e] font-semibold bg-emerald-100/70 px-2.5 py-0.5 rounded-md flex items-center gap-1">
+                      <Check className="w-3 h-3 text-[#006a4e]" />
+                      Saved in Employee Information (Last updated: {workAreaLastUpdated})
+                    </span>
+                  )}
+                </div>
+
+                {/* Inline Confirmation Toast */}
+                {workAreaSuccessMsg && (
+                  <div className="mb-2 p-2 bg-emerald-50 border border-emerald-400 text-emerald-800 text-xs font-bold rounded-lg flex items-center gap-1.5">
+                    <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
+                    <span>{workAreaSuccessMsg}</span>
+                  </div>
+                )}
+
+                {!isEditingWorkArea && workArea.trim() ? (
+                  /* 1. SAVED DISPLAY STATE WITH 'CHANGE' BUTTON */
+                  <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                    <div className="flex-1 min-w-0 px-3.5 py-2.5 bg-emerald-50/70 border-2 border-emerald-300 rounded-lg text-sm font-semibold text-gray-900 flex items-center gap-2">
+                      <MapPin className="w-4 h-4 text-[#006a4e] shrink-0" />
+                      <span className="truncate">{workArea}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsEditingWorkArea(true);
+                        setWorkAreaSuccessMsg(null);
+                      }}
+                      className="px-4 py-2.5 bg-white border-2 border-[#006a4e] text-[#006a4e] hover:bg-[#006a4e] hover:text-white rounded-lg text-sm font-bold transition flex items-center justify-center gap-1.5 shadow-xs cursor-pointer shrink-0"
+                      title="Change or update Work Area location"
+                    >
+                      <Edit3 className="w-4 h-4" />
+                      <span>Change</span>
+                    </button>
+                  </div>
+                ) : (
+                  /* 2. EDITING / INPUT STATE: 1-LINE BOX WITH 'SUBMIT' BUTTON */
+                  <div className="space-y-1">
+                    <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                      <div className="relative flex-1">
+                        <input
+                          type="text"
+                          id="workAreaInput"
+                          value={workArea}
+                          onChange={(e) => {
+                            setWorkArea(e.target.value);
+                            setForm(prev => ({ ...prev, workArea: e.target.value }));
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.preventDefault();
+                              handleSaveWorkAreaDirect();
+                            }
+                          }}
+                          placeholder="উনি কোন লোকেশনে কাজ করেন, বিল্ডিং এর নাম, ফ্লোর নাম্বার, প্রযোজ্য ক্ষেত্রে অফিসের নাম/রুম নাম্বার সহ উল্লেখ করুন।"
+                          className="w-full pl-9 pr-3 py-2.5 text-sm rounded-lg border-2 border-gray-300 focus:border-[#006a4e] focus:ring-4 focus:ring-[#006a4e]/10 outline-none transition-all font-medium text-gray-900 bg-white"
+                          autoFocus={isEditingWorkArea}
+                        />
+                        <MapPin className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={handleSaveWorkAreaDirect}
+                        disabled={workAreaLoading || !workArea.trim()}
+                        className="px-5 py-2.5 bg-[#006a4e] text-white hover:bg-[#00523c] disabled:bg-gray-300 disabled:cursor-not-allowed rounded-lg text-sm font-bold transition flex items-center justify-center gap-1.5 shadow-sm cursor-pointer shrink-0"
+                        title="Submit and save location to Employee Information sheet"
+                      >
+                        {workAreaLoading ? (
+                          <>
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <span>Saving...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Check className="w-4 h-4" />
+                            <span>Submit</span>
+                          </>
+                        )}
+                      </button>
+
+                      {data?.info?.workArea && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setWorkArea(data.info?.workArea || '');
+                            setIsEditingWorkArea(false);
+                          }}
+                          disabled={workAreaLoading}
+                          className="px-3.5 py-2.5 bg-gray-100 hover:bg-gray-200 text-gray-700 rounded-lg text-sm font-semibold transition shrink-0 cursor-pointer"
+                          title="Cancel editing"
+                        >
+                          Cancel
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-gray-500 mt-1">
+                      উদাহরণ: DSC, Knowledge Tower, Ground Floor, HR Office
+                    </p>
+                  </div>
+                )}
+              </div>
+
+              {/* Print View for Work Area */}
+              <div className="hidden print:block col-span-2 md:col-span-4 border-t border-gray-300 pt-2">
+                <span className="text-xs uppercase font-bold text-gray-600">Work Area: </span>
+                <strong className="text-gray-900 font-semibold">{workArea || 'Not Specified'}</strong>
+              </div>
             </div>
 
             {/* SELECTION GUIDANCE BANNER */}
@@ -1159,9 +1505,6 @@ export default function App() {
                     <li>সাধারণ কর্মদিবসে overtime কত ঘন্টা করেছে সে তথ্য দিন (ফরম্যাট: hh:mm, সর্বনিম্ন ১:০০)</li>
                     <li>Holiday/Weekend এর ক্ষেত্রে উক্ত দিন উনি কি কাজ করেছিলেন সেটা লিখুন এবং ডিউটি ঘণ্টা উল্লেখ করুন।</li>
                   </ul>
-                  <p className="text-[11px] text-emerald-800 font-bold italic pt-0.5">
-                    * তারিখ সিলেক্ট করলে ঘণ্টা প্রদান বাধ্যতামূলক; অন্যথায় তারিখটি আনসিলেক্ট রাখুন।
-                  </p>
                 </div>
               </div>
               <div className="text-xs font-bold text-[#006a4e] bg-white px-3 py-1.5 rounded-lg border border-emerald-200 self-start sm:self-auto shadow-xs shrink-0">
@@ -1175,23 +1518,21 @@ export default function App() {
                 <thead className="text-xs text-white uppercase bg-[#006a4e] print:text-black print:bg-gray-100">
                   <tr>
                     <th scope="col" className="w-12 px-3 py-3.5 text-center no-print">
-                      <span className="sr-only">Select</span>
-                      <span className="text-[11px] font-black">সিলেক্ট</span>
+                      <span className="text-[11px] font-black tracking-wider">SELECT</span>
                     </th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">{t('colDate', "DATE")}</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">{t('colDay', "DAY")}</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">{t('colSchIn', "SCH IN")}</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">{t('colSchOut', "SCH OUT")}</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">{t('colIn', "IN")}</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">{t('colOut', "OUT")}</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">{t('colTotal', "TOTAL")}</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">{t('colStatus', "STATUS")}</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">DATE</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">DAY</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">SCH IN</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">SCH OUT</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">IN TIME</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">OUT TIME</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">WORKING HOURS</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">STATUS</th>
                     <th scope="col" className="px-3 py-3.5 text-center whitespace-nowrap font-black bg-[#00523c] print:bg-gray-200">
                       <div className="flex items-center justify-center gap-1">
-                        <span>{t('colOtHours', "OT HOURS")}</span>
+                        <span>OT HOURS</span>
                         <span className="text-red-300 font-black text-sm">*</span>
                       </div>
-                      <span className="block text-[10px] text-emerald-200 font-bold no-print">(বাধ্যতামূলক)</span>
                     </th>
                   </tr>
                 </thead>
@@ -1407,7 +1748,7 @@ export default function App() {
                                       rows={2}
                                       value={rowState.taskDescription}
                                       onChange={(e) => handleTaskDescChange(record.date, e.target.value)}
-                                      placeholder="এই দিনে কর্মী কী দায়িত্ব/কাজ সম্পন্ন করেছেন তা সংক্ষেপে লিখুন..."
+                                      placeholder="এই দিনে কর্মী কী দায়িত্ব/কাজ সম্পন্ন করেছেন তা সংক্ষেপে লিখুন...(সর্বোচ্চ ২০০ শব্দ)"
                                       className={`w-full p-2.5 text-sm rounded-lg border outline-none font-normal transition-all ${
                                         rowState.descError 
                                           ? 'border-red-500 focus:ring-2 focus:ring-red-200' 
@@ -1435,7 +1776,7 @@ export default function App() {
                                         সহায়ক ডকুমেন্ট (ঐচ্ছিক) / Supporting File (Optional)
                                       </label>
                                       <span className="text-[11px] text-gray-500 block">
-                                        হলিডে কাজের রিকুইজিশন, অনুমোদনপত্র বা সংশ্লিষ্ট ডকুমেন্ট (PDF, JPG, PNG)
+                                        হলিডে কাজের অনুমোদনপত্র বা সংশ্লিষ্ট ডকুমেন্ট (PDF, JPG, PNG)
                                       </span>
                                     </div>
 
@@ -1483,169 +1824,237 @@ export default function App() {
             </div>
 
             {/* REVIEW SUMMARY INPUTS & HR INFORMATION */}
-            <div className="bg-gray-50 p-5 sm:p-6 rounded-2xl border-2 border-gray-200 shadow-inner">
-              <h3 className="text-lg sm:text-xl font-bold text-gray-900 border-b-2 border-[#006a4e] pb-2 mb-4">
-                {t('reviewSummaryTitle', "Review Summary:")} {data.info?.name} - {data.dateRange}
-              </h3>
+            <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200/90 shadow-sm space-y-5">
               
-              <p className="text-xs sm:text-sm text-[#006a4e] mb-6 font-bold leading-relaxed">
-                {t('lblCommonWeekend', "Common Weekend =")} {sysConfig?.weekend || 'Friday'} <br /> 
-                {t('lblHoliday', "Holiday =")} {sysConfig?.holiday || 'As per DIU Calendar'} <br />
-                {t('lblCommonShift', "Common Shift =")} {sysConfig?.commonShift || '8 Hours'} <br />
-                {t('lblSpecialShift', "Special Shift =")} {sysConfig?.specialShift || 'N/A'}
-              </p>
-              
-              {/* Summary Fields (Auto-synced with table selections & backward compatible) */}
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-                <div>
-                  <label className="block font-black text-gray-800 text-sm sm:text-base">
-                    1. {t('field1Label', 'Total Overtime Duty Days in')} {targetMonthText}
-                  </label>
-                  <span className="sub-label no-print block text-[#006a4e] font-bold text-xs sm:text-sm">
-                    [{targetMonthText} {t('field1Sub', 'মাসে মোট কয়দিন উনাকে ওভারটাইম ডিউটির অনুমতি দিয়েছিলেন?')}]
-                  </span>
-                  <input 
-                    type="text" 
-                    id="otDutyDays"
-                    readOnly
-                    value={form.otDutyDays}
-                    className="w-full p-3 bg-gray-100 border-2 border-gray-200 rounded-lg font-bold text-lg text-gray-800 cursor-not-allowed" 
-                    placeholder="0" 
-                  />
-                  <span className="text-[11px] text-gray-500 font-medium">স্বয়ংক্রিয়ভাবে টেবিল থেকে হিসাব করা</span>
+              {/* Top Header Bar & Shift Info Pills */}
+              <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-2 border-b border-slate-100">
+                <div className="flex items-start gap-3">
+                  <span className="w-3.5 h-3.5 rounded-full bg-[#006a4e] mt-1.5 shrink-0"></span>
+                  <div>
+                    <h3 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                      Review Summary: {data.info?.name}
+                    </h3>
+                    <p className="text-xs sm:text-sm text-slate-500 font-semibold mt-0.5">
+                      {data.dateRange}
+                    </p>
+                  </div>
                 </div>
 
-                <div>
-                  <label className="block font-black text-gray-800 text-sm sm:text-base">
-                    2. {t('field2Label', 'Total Overtime Hours in')} {targetMonthText}
-                  </label>
-                  <span className="sub-label no-print block text-[#006a4e] font-bold text-xs sm:text-sm">
-                    [{targetMonthText} {t('field2Sub', 'মাসে উনার সর্বমোট ওভারটাইম কত ঘন্টা?')}]
-                  </span>
-                  <input 
-                    type="text" 
-                    id="totalOtHours"
-                    readOnly
-                    value={form.totalOtHours}
-                    className="w-full p-3 bg-gray-100 border-2 border-gray-200 rounded-lg font-bold text-lg text-gray-800 cursor-not-allowed" 
-                    placeholder="0:00" 
-                  />
-                  <span className="text-[11px] text-gray-500 font-medium">স্বয়ংক্রিয়ভাবে টেবিল থেকে হিসাব করা</span>
-                </div>
+                {/* Right Shift Pills */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
+                  {/* Common Weekend */}
+                  <div className="bg-emerald-50/80 border border-emerald-200/80 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs">
+                    <Calendar className="w-5 h-5 text-emerald-600 shrink-0" />
+                    <div>
+                      <span className="text-[10px] font-bold text-emerald-700 tracking-wider block">Common Weekend</span>
+                      <strong className="text-xs sm:text-sm font-black text-emerald-950 block">{sysConfig?.weekend || '4 Days'}</strong>
+                    </div>
+                  </div>
 
-                <div>
-                  <label className="block font-black text-gray-800 text-sm sm:text-base">
-                    3. {t('field3Label', 'Total Holiday/Weekend Duty Days in')} {targetMonthText}
-                  </label>
-                  <span className="sub-label no-print block text-[#006a4e] font-bold text-xs sm:text-sm">
-                    [{targetMonthText} {t('field3Sub', 'মাসে উনার মোট হলিডে বা উইকেন্ড ডিউটি কতদিন?')}]
-                  </span>
-                  <input 
-                    type="text" 
-                    id="totalHolidayDays"
-                    readOnly
-                    value={form.totalHolidayDays}
-                    className="w-full p-3 bg-gray-100 border-2 border-gray-200 rounded-lg font-bold text-lg text-gray-800 cursor-not-allowed" 
-                    placeholder="0" 
-                  />
-                  <span className="text-[11px] text-gray-500 font-medium">স্বয়ংক্রিয়ভাবে টেবিল থেকে হিসাব করা</span>
-                </div>
+                  {/* Holiday */}
+                  <div className="bg-blue-50/80 border border-blue-200/80 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs">
+                    <CalendarDays className="w-5 h-5 text-blue-600 shrink-0" />
+                    <div>
+                      <span className="text-[10px] font-bold text-blue-700 tracking-wider block">Holiday</span>
+                      <strong className="text-xs sm:text-sm font-black text-blue-950 block">{sysConfig?.holiday || '2 Days'}</strong>
+                    </div>
+                  </div>
 
-                <div>
-                  <label className="block font-black text-gray-800 text-sm sm:text-base">
-                    4. Total Holiday/Weekend Duty Hours in {targetMonthText}
-                  </label>
-                  <span className="sub-label no-print block text-[#006a4e] font-bold text-xs sm:text-sm">
-                    [{targetMonthText} মাসে উনার মোট হলিডে বা উইকেন্ড ডিউটি কতঘন্টা?]
-                  </span>
-                  <input 
-                    type="text" 
-                    id="totalHolidayHours"
-                    readOnly
-                    value={form.totalHolidayHours}
-                    className="w-full p-3 bg-gray-100 border-2 border-gray-200 rounded-lg font-bold text-lg text-gray-800 cursor-not-allowed" 
-                    placeholder="0:00" 
-                  />
-                  <span className="text-[11px] text-gray-500 font-medium">স্বয়ংক্রিয়ভাবে টেবিল থেকে হিসাব করা</span>
+                  {/* Common Shift */}
+                  <div className="bg-amber-50/80 border border-amber-200/80 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs">
+                    <Clock className="w-5 h-5 text-amber-600 shrink-0" />
+                    <div>
+                      <span className="text-[10px] font-bold text-amber-700 tracking-wider block">Common Shift</span>
+                      <strong className="text-xs sm:text-sm font-black text-amber-950 block">{sysConfig?.commonShift || '8 Hours'}</strong>
+                    </div>
+                  </div>
+
+                  {/* Special Shift */}
+                  <div className="bg-slate-100/80 border border-slate-200 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs">
+                    <FileText className="w-5 h-5 text-slate-600 shrink-0" />
+                    <div>
+                      <span className="text-[10px] font-bold text-slate-600 tracking-wider block">Special Shift</span>
+                      <strong className="text-xs sm:text-sm font-black text-slate-900 block">{sysConfig?.specialShift || 'N/A'}</strong>
+                    </div>
+                  </div>
                 </div>
               </div>
 
-              {/* IMPORTANT HR NOTICE */}
-              <div className="mb-6 p-4 sm:p-5 bg-red-50 border-l-8 border-red-500 rounded-lg text-xs sm:text-sm text-gray-900 no-print">
-                <h4 className="font-black text-red-700 mb-2 text-base">{t('importantNoteTitle', "গুরুত্বপূর্ণ নোট:")}</h4>
-                <ul className="list-decimal pl-5 space-y-1.5 font-semibold">
-                  <li>{t('importantNote1', "যেকোনো হলিডে বা ওভারটাইম ডিউটি বিলের ক্ষেত্রে উপস্থিতির পাঞ্চ বাধ্যতামূলক।")}</li>
-                  <li>{t('importantNote2', "সুপারভাইজারের রিকমেন্ডেশন অবশ্যই উক্ত এমপ্লয়ীর জন্য ম্যানেজমেন্ট প্রদত্ত অনুমোদনের সঙ্গে সামঞ্জস্যপূর্ণ হতে হবে।")}</li>
-                  <li>{t('importantNote3', "উপস্থিতির পাঞ্চ থাকলেও সুপারভাইজার এর রিকমেন্ডেশন ব্যতীত হলিডে বা ওভারটাইম ডিউটি বিল প্রদান করা হবে না।")}</li>
-                </ul>
+              {/* Main Overtime & Holiday/Weekend KPI Segmented Card */}
+              <div className="border border-slate-200/90 rounded-2xl p-5 sm:p-6 bg-white shadow-2xs grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+                {/* Segment 1: Month & Year Badge */}
+                <div className="lg:col-span-2 flex flex-col items-center justify-center text-center lg:border-r border-slate-200/80 pr-0 lg:pr-6 pb-4 lg:pb-0 border-b lg:border-b-0">
+                  <div className="w-12 h-12 rounded-2xl bg-emerald-50 text-[#006a4e] flex items-center justify-center mb-2 shadow-2xs">
+                    <Calendar className="w-6 h-6 text-[#006a4e]" />
+                  </div>
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                    {sysConfig?.month || 'August'}
+                  </span>
+                  <span className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight leading-none mt-0.5">
+                    {sysConfig?.year || '2026'}
+                  </span>
+                </div>
+
+                {/* Segment 2: Regular Overtime */}
+                <div className="lg:col-span-5 flex flex-col justify-between lg:border-r border-slate-200/80 px-0 lg:px-6 pb-4 lg:pb-0 border-b lg:border-b-0">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-2xl bg-emerald-50 text-[#006a4e] flex items-center justify-center shrink-0 shadow-2xs">
+                      <Briefcase className="w-5 h-5 text-[#006a4e]" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm sm:text-base font-bold text-slate-900">Regular Overtime</h4>
+                      <p className="text-[11px] text-slate-500 font-medium">Based on selected working days</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 items-center text-center">
+                    <div>
+                      <span className="text-3xl sm:text-4xl font-black text-[#006a4e] tracking-tight block">
+                        {form.otDutyDays || '0'}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-500 mt-1 block">Duty Days</span>
+                    </div>
+                    <div className="border-l border-slate-200/90 pl-3">
+                      <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight block">
+                        {form.totalOtHours || '0:00'}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-500 mt-1 block">Total OT Hours</span>
+                    </div>
+                  </div>
+
+                  <div className="h-1.5 w-full bg-emerald-500 rounded-full mt-4"></div>
+                  <input type="hidden" id="otDutyDays" value={form.otDutyDays} readOnly />
+                  <input type="hidden" id="totalOtHours" value={form.totalOtHours} readOnly />
+                </div>
+
+                {/* Segment 3: Holiday / Weekend Overtime */}
+                <div className="lg:col-span-5 flex flex-col justify-between pl-0 lg:pl-6">
+                  <div className="flex items-center gap-3 mb-4">
+                    <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 shadow-2xs">
+                      <CalendarDays className="w-5 h-5 text-amber-600" />
+                    </div>
+                    <div>
+                      <h4 className="text-sm sm:text-base font-bold text-slate-900">Holiday / Weekend Overtime</h4>
+                      <p className="text-[11px] text-slate-500 font-medium">Based on selected holiday and weekend days</p>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 items-center text-center">
+                    <div>
+                      <span className="text-3xl sm:text-4xl font-black text-amber-700 tracking-tight block">
+                        {form.totalHolidayDays || '0'}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-500 mt-1 block">Duty Days</span>
+                    </div>
+                    <div className="border-l border-slate-200/90 pl-3">
+                      <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight block">
+                        {form.totalHolidayHours || '0:00'}
+                      </span>
+                      <span className="text-xs font-semibold text-slate-500 mt-1 block">Total OT Hours</span>
+                    </div>
+                  </div>
+
+                  <div className="h-1.5 w-full bg-amber-400 rounded-full mt-4"></div>
+                  <input type="hidden" id="totalHolidayDays" value={form.totalHolidayDays} readOnly />
+                  <input type="hidden" id="totalHolidayHours" value={form.totalHolidayHours} readOnly />
+                </div>
+              </div>
+
+              {/* IMPORTANT HR NOTICE (in Bengali as requested) */}
+              <div className="p-4 sm:p-5 bg-rose-50/60 border border-rose-200/80 rounded-2xl flex items-start gap-3.5 no-print">
+                <div className="w-10 h-10 rounded-full bg-rose-100 text-rose-600 flex items-center justify-center shrink-0 shadow-2xs mt-0.5">
+                  <Pin className="w-5 h-5 text-rose-600 rotate-45" />
+                </div>
+                <div>
+                  <h4 className="font-bold text-rose-700 text-sm mb-1.5">
+                    {t('importantNoteTitle', "গুরুত্বপূর্ণ নোট:")}
+                  </h4>
+                  <ul className="list-decimal pl-5 space-y-1 text-slate-700 text-xs sm:text-sm font-medium leading-relaxed">
+                    <li>{t('importantNote1', "যেকোনো হলিডে বা ওভারটাইম ডিউটি বিলের ক্ষেত্রে উপস্থিতির পাঞ্চ বাধ্যতামূলক।")}</li>
+                    <li>{t('importantNote2', "সুপারভাইজারের রিকমেন্ডেশন অবশ্যই উক্ত এমপ্লয়ীর জন্য ম্যানেজমেন্ট প্রদত্ত অনুমোদনের সঙ্গে সামঞ্জস্যপূর্ণ হতে হবে।")}</li>
+                    <li>{t('importantNote3', "উপস্থিতির পাঞ্চ থাকলেও সুপারভাইজার এর রিকমেন্ডেশন ব্যতীত হলিডে বা ওভারটাইম ডিউটি বিল প্রদান করা হবে না।")}</li>
+                  </ul>
+                </div>
               </div>
 
               {/* MANDATORY UNFILLED HOURS BLOCKER BANNER - only shown when user clicked/tabbed away or attempted action without entering hours */}
               {hasHoursErrorAnywhere && (
-                <div className="mb-6 p-4 sm:p-5 bg-red-50 border-2 border-red-500 rounded-xl text-red-900 text-xs sm:text-sm font-bold flex items-start gap-3 shadow-md animate-pulse no-print">
-                  <AlertTriangle className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+                <div className="p-4 sm:p-5 bg-rose-50 border border-rose-300 rounded-xl text-rose-900 text-xs sm:text-sm font-bold flex items-start gap-3 shadow-xs animate-pulse no-print">
+                  <AlertTriangle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-extrabold text-sm sm:text-base text-red-700">
+                    <p className="font-bold text-sm sm:text-base text-rose-700">
                       ডিউটি ঘণ্টা পূরণ করা বাধ্যতামূলক!
                     </p>
-                    <p className="text-xs sm:text-sm font-semibold text-gray-800 mt-1">
-                      আপনি <span className="text-red-700 font-black">{datesWithHoursError.length}</span> টি তারিখ সিলেক্ট করেছেন কিন্তু ঘণ্টা লেখেননি ({datesWithHoursError.map(d => d.date).join(', ')} )। তারিখ সিলেক্ট করার পর ঘণ্টা না লিখে পরবর্তী কোনো অপশনে যাওয়া বা সাবমিট করা যাবে না। অনুগ্রহ করে টেবিলে লাল চিহ্নিত তারিখে অনুমোদিত ঘণ্টা লিখুন অথবা তারিখটি আনসিলেক্ট করুন।
+                    <p className="text-xs sm:text-sm font-semibold text-slate-800 mt-1">
+                      আপনি <span className="text-rose-700 font-black">{datesWithHoursError.length}</span> টি তারিখ সিলেক্ট করেছেন কিন্তু ঘণ্টা লেখেননি ({datesWithHoursError.map(d => d.date).join(', ')} )। তারিখ সিলেক্ট করার পর ঘণ্টা না লিখে পরবর্তী কোনো অপশনে যাওয়া বা সাবমিট করা যাবে না। অনুগ্রহ করে টেবিলে লাল চিহ্নিত তারিখে অনুমোদিত ঘণ্টা লিখুন অথবা তারিখটি আনসিলেক্ট করুন।
                     </p>
                   </div>
                 </div>
               )}
 
-              {/* TERMS AGREEMENT */}
-              <label id="termsCheckboxLabel" className="flex items-center gap-3 mb-6 font-black cursor-pointer p-4 bg-white border-2 border-[#006a4e]/20 rounded-xl hover:bg-[#f0f9f6] no-print transition-colors">
-                <input 
-                  type="checkbox" 
-                  checked={agreed}
-                  onChange={(e) => {
-                    if (e.target.checked && !validateBeforeNavigating()) {
-                      const firstMissing = Object.values(dateStates).find(d => d.selected && (!d.otHours || d.otHours.trim() === ''));
-                      if (firstMissing) {
-                        document.getElementById(`ot-input-${firstMissing.date}`)?.focus();
-                        document.getElementById(`row-${firstMissing.date}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                      }
-                    }
-                    setAgreed(e.target.checked);
-                  }}
-                  className="w-6 h-6 accent-[#006a4e] rounded cursor-pointer shrink-0" 
-                /> 
-                <span className="text-gray-900 uppercase tracking-tight text-xs sm:text-sm">
-                  {t('termsText', "I have read and agreed to the above terms.")}
-                </span>
-              </label>
-
-              {/* SUPERVISOR INFORMATION */}
-              <div id="supervisorInputSection" className="grid grid-cols-1 md:grid-cols-2 gap-6 border-t-2 border-gray-200 pt-6 no-print">
-                <div>
-                  <label className="block font-black text-gray-800 mb-2 text-sm">
-                    {t('supIdLabel', "Supervisor ID")} <span className="text-red-600">*</span>
+              {/* Middle Row: Terms Checkbox & Supervisor Information in 1 Grid */}
+              <div className="border border-slate-200/90 rounded-2xl p-4 sm:p-5 bg-white grid grid-cols-1 lg:grid-cols-12 gap-4 items-center no-print">
+                {/* 1. Terms Agreement */}
+                <div className="lg:col-span-4 h-full flex items-center">
+                  <label id="termsCheckboxLabel" className="flex items-center gap-3 p-3 bg-slate-50 hover:bg-emerald-50/40 border border-slate-200 hover:border-emerald-300 rounded-xl cursor-pointer w-full transition-all">
+                    <input 
+                      type="checkbox" 
+                      checked={agreed}
+                      onChange={(e) => {
+                        if (e.target.checked && !validateBeforeNavigating()) {
+                          const firstMissing = Object.values(dateStates).find(d => d.selected && (!d.otHours || d.otHours.trim() === ''));
+                          if (firstMissing) {
+                            document.getElementById(`ot-input-${firstMissing.date}`)?.focus();
+                            document.getElementById(`row-${firstMissing.date}`)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                          }
+                        }
+                        setAgreed(e.target.checked);
+                      }}
+                      className="w-5 h-5 text-[#006a4e] accent-[#006a4e] rounded cursor-pointer shrink-0" 
+                    /> 
+                    <span className="text-slate-800 uppercase tracking-tight text-xs font-bold select-none">
+                      {t('termsText', "I have read and agreed to the above terms.")}
+                    </span>
                   </label>
-                  <input 
-                    type="text" 
-                    id="supId"
-                    value={form.supId}
-                    onFocus={() => validateBeforeNavigating()}
-                    onChange={(e) => setForm(prev => ({ ...prev, supId: e.target.value }))}
-                    className="w-full p-3 border-2 border-gray-200 rounded-lg focus:ring-4 focus:ring-[#006a4e]/10 focus:border-[#006a4e] outline-none font-bold text-sm sm:text-base" 
-                    placeholder={t('supIdPlaceholder', "Enter Your Supervisor ID")} 
-                  />
                 </div>
-                <div>
-                  <label className="block font-black text-gray-800 mb-2 text-sm">
-                    {t('supEmailLabel', "Supervisor Official Email")} <span className="text-red-600">*</span>
+
+                {/* 2. Supervisor ID */}
+                <div className="lg:col-span-4">
+                  <label htmlFor="supId" className="block text-xs font-bold text-slate-800 mb-1">
+                    {t('supIdLabel', "Supervisor ID")} <span className="text-rose-500 font-bold">*</span>
                   </label>
-                  <input 
-                    type="email" 
-                    value={email}
-                    onFocus={() => validateBeforeNavigating()}
-                    onChange={(e) => setEmail(e.target.value)}
-                    className="w-full p-3 border-2 border-gray-200 rounded-lg focus:ring-4 focus:ring-[#006a4e]/10 focus:border-[#006a4e] outline-none font-bold text-sm sm:text-base" 
-                    placeholder={t('supEmailPlaceholder', "supervisor@diu.edu.bd")} 
-                  />
-                  <span className="text-[11px] text-gray-500 block mt-1">Verification code will be sent to this official address.</span>
+                  <div className="relative">
+                    <User className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input 
+                      type="text" 
+                      id="supId"
+                      value={form.supId}
+                      onFocus={() => validateBeforeNavigating()}
+                      onChange={(e) => setForm(prev => ({ ...prev, supId: e.target.value }))}
+                      className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-4 focus:ring-[#006a4e]/10 focus:border-[#006a4e] outline-none font-semibold text-slate-900 placeholder:text-slate-400 shadow-2xs transition-all" 
+                      placeholder={t('supIdPlaceholder', "Enter Your ID")} 
+                    />
+                  </div>
+                </div>
+
+                {/* 3. Supervisor Official Email */}
+                <div className="lg:col-span-4">
+                  <label htmlFor="supEmail" className="block text-xs font-bold text-slate-800 mb-1">
+                    {t('supEmailLabel', "Supervisor Official Email")} <span className="text-rose-500 font-bold">*</span>
+                  </label>
+                  <div className="relative">
+                    <Mail className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                    <input 
+                      type="email" 
+                      id="supEmail"
+                      value={email}
+                      onFocus={() => validateBeforeNavigating()}
+                      onChange={(e) => setEmail(e.target.value)}
+                      className="w-full pl-9 pr-3 py-2 text-sm bg-white border border-slate-300 rounded-lg focus:ring-4 focus:ring-[#006a4e]/10 focus:border-[#006a4e] outline-none font-semibold text-slate-900 placeholder:text-slate-400 shadow-2xs transition-all" 
+                      placeholder={t('supEmailPlaceholder', "supervisor@company.com")} 
+                    />
+                  </div>
+                  <span className="text-[11px] text-slate-500 block mt-1">Verification code will be sent to this official address.</span>
                 </div>
               </div>
 
@@ -1662,48 +2071,56 @@ export default function App() {
                 </div>
               </div>
 
-              {/* PRINT PROMPT BANNER */}
-              <div className="mt-8 text-center no-print">
-                <div className="p-4 sm:p-6 border-3 border-dashed border-[#006a4e] rounded-2xl bg-white shadow-md inline-block">
-                  <p className="text-base sm:text-xl font-black text-[#006a4e]">
-                    {t('printPrompt1', "Please print the report before submit online.")}
-                  </p>
-                  <p className="text-xs sm:text-sm font-bold text-gray-600 mt-1">
-                    {t('printPrompt2', "[অনলাইনে রিপোর্টটি সাবমিট করার পূর্বে প্রিন্ট করে নিন]")}
-                  </p>
-                </div>
-              </div>
+              {/* Bottom Action Row: Print Prompt Callout & Buttons */}
+              <div className="pt-2 no-print space-y-2">
+                <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                  {/* Left: Print Prompt Banner */}
+                  <div className="flex-1 p-3.5 sm:p-4 bg-emerald-50/50 border border-emerald-200/90 rounded-2xl flex items-center gap-3.5 shadow-2xs">
+                    <div className="pr-3.5 border-r border-emerald-300/80 shrink-0">
+                      <Printer className="w-6 h-6 text-[#006a4e]" />
+                    </div>
+                    <div>
+                      <p className="text-sm font-bold text-[#006a4e] leading-snug">
+                        {t('printPrompt1', "Please print the report before submit online.")}
+                      </p>
+                      <p className="text-xs text-[#006a4e]/85 font-medium leading-snug mt-0.5">
+                        {t('printPrompt2', "অনলাইনে রিপোর্টটি সাবমিট করার পূর্বে প্রিন্ট করে নিন")}
+                      </p>
+                    </div>
+                  </div>
 
-              {/* ACTION BUTTONS */}
-              <div className="mt-8 flex flex-col items-end gap-3 no-print">
-                <p className="text-red-600 font-bold text-xs sm:text-sm italic">
-                  {t('printWarning', "* একজন কর্মীর জন্য একাধিকবার এন্ট্রি করলে সর্বশেষ এন্ট্রি গণ্য হবে")}
-                </p>
-                <div className="flex flex-col sm:flex-row justify-end gap-4 w-full sm:w-auto">
-                  <button 
-                    id="printBtn"
-                    type="button"
-                    onClick={handlePrint} 
-                    className="bg-gray-800 text-white px-8 py-3.5 rounded-xl hover:bg-black font-black text-base shadow-lg transition transform hover:scale-[1.02] flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <Printer className="w-5 h-5" />
-                    <span>{t('printBtn', "🖨️ Print Report")}</span>
-                  </button>
-                  
-                  <button 
-                    id="otpBtn"
-                    type="button"
-                    onClick={initiateOtp} 
-                    disabled={otpLoading}
-                    className="bg-[#16a34a] hover:bg-[#11803a] text-white px-10 py-3.5 rounded-xl font-black text-base shadow-lg transition transform hover:scale-[1.02] disabled:opacity-50 flex items-center justify-center gap-2 cursor-pointer"
-                  >
-                    <ShieldCheck className="w-5 h-5" />
-                    <span>
-                      {otpLoading 
-                        ? t('otpBtnLoading', "Sending Code...") 
-                        : t('otpBtn', "Request OTP & Submit")}
-                    </span>
-                  </button>
+                  {/* Right: Disclaimer note & Buttons */}
+                  <div className="flex flex-col items-end gap-1.5 shrink-0">
+                    <p className="text-[12px] sm:text-xs text-rose-600 font-semibold italic text-right">
+                      {t('printWarning', "* একজন কর্মীর জন্য একাধিকবার এন্ট্রি করলে সর্বশেষ এন্ট্রি গণ্য হবে")}
+                    </p>
+                    <div className="flex items-center gap-3 w-full sm:w-auto">
+                      <button 
+                        id="printBtn"
+                        type="button"
+                        onClick={handlePrint} 
+                        className="px-6 py-2.5 sm:py-3 bg-[#1e293b] hover:bg-slate-900 text-white font-bold text-sm rounded-xl shadow-xs hover:shadow transition-all flex items-center justify-center gap-2 cursor-pointer"
+                      >
+                        <Printer className="w-4 h-4" />
+                        <span>{t('printBtn', "Print Report")}</span>
+                      </button>
+                      
+                      <button 
+                        id="otpBtn"
+                        type="button"
+                        onClick={initiateOtp} 
+                        disabled={otpLoading}
+                        className="px-7 py-2.5 sm:py-3 bg-[#006a4e] hover:bg-[#00543e] disabled:bg-slate-300 text-white font-bold text-sm rounded-xl shadow-xs hover:shadow transition-all flex items-center justify-center gap-2 cursor-pointer disabled:cursor-not-allowed"
+                      >
+                        <ShieldCheck className="w-4 h-4" />
+                        <span>
+                          {otpLoading 
+                            ? t('otpBtnLoading', "Sending Code...") 
+                            : t('otpBtn', "Request OTP & Submit")}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
                 </div>
               </div>
 
@@ -1734,9 +2151,12 @@ export default function App() {
                 setEmpId('');
                 setData(null);
                 setDateStates({});
+                setWorkArea('');
+                setWorkAreaLastUpdated('');
                 setForm({
                   empId: '',
                   supId: '',
+                  workArea: '',
                   otDutyDays: '0',
                   totalOtHours: '0:00',
                   totalHolidayDays: '0',
