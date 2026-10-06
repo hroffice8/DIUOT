@@ -125,7 +125,13 @@ export interface DateSelectionState {
   chkOut: string;
   total: string;
   selected: boolean;
-  otHours: string; // "1", "1.5", "2", "2.5", "3", etc.
+  selectedTier?: 1 | 2 | 3 | null;
+  tierValues?: {
+    1: string;
+    2: string;
+    3: string;
+  };
+  otHours: string; // Active approved OT hours (e.g. "1:00", "2:00", "2:10")
   taskDescription: string;
   file: File | null;
   fileName?: string;
@@ -356,6 +362,14 @@ export function validateOtAgainstPunch(
       };
     }
 
+    // Maximum 8 hours for holiday/weekend duty
+    if (durationMin > 480) {
+      return {
+        isValid: false,
+        message: 'হলিডে বা উইকেন্ড ডিউটি সর্বোচ্চ ৮:০০ ঘণ্টা পর্যন্ত অনুমোদিত। ৮ ঘণ্টার বেশি অনুমোদন করা যাবে না।'
+      };
+    }
+
     // If both punches are present, ensure employee was present for at least the claimed OT hours
     if (actInMin !== null && actOutMin !== null) {
       let durationMinutes = actOutMin - actInMin;
@@ -372,6 +386,106 @@ export function validateOtAgainstPunch(
 
     return { isValid: true, message: null };
   }
+}
+
+export interface PunchExtraTiers {
+  totalExtraMinutes: number;
+  isSpecial: boolean;
+  box1: { available: boolean; defaultVal: string };
+  box2: { available: boolean; defaultVal: string };
+  box3: { available: boolean; defaultVal: string; maxPunchVal: string };
+  holidayBox: { available: boolean; defaultVal: string; maxPunchVal: string };
+}
+
+/**
+ * Calculates extra hour tiers from punch data:
+ * - Normal day: 3 boxes:
+ *   1st box: 1 hour, if has punch data (>= 60 min)
+ *   2nd box: 1+ upto 2 hours, according to punch data
+ *   3rd box: 2+ hours, default max 3H, but supervisor can increase up to available punch data
+ * - Holiday & Weekend: only 1 box, Maximum 8H, supervisor can reduce to lowest 1H
+ */
+export function calculatePunchExtraTiers(record: AttendanceRecord): PunchExtraTiers {
+  const isSpecial = isWeekendOrHoliday(record.status);
+  let totalExtraMin = 0;
+
+  if (!isSpecial) {
+    // Normal working day
+    const schOutMin = parseTimeToMinutes(record.schOut);
+    const actOutMin = parseTimeToMinutes(record.chkOut);
+    const actInMin = parseTimeToMinutes(record.chkIn);
+
+    if (actOutMin !== null) {
+      if (schOutMin !== null) {
+        let diff = actOutMin - schOutMin;
+        if (diff < 0 && actOutMin < 360 && schOutMin > 720) {
+          diff += 1440; // overnight
+        }
+        totalExtraMin = Math.max(0, diff);
+      } else if (actInMin !== null && actOutMin > actInMin) {
+        // Fallback: 8 hours standard shift (480 mins)
+        const worked = actOutMin - actInMin;
+        totalExtraMin = Math.max(0, worked - 480);
+      }
+    }
+  } else {
+    // Weekend / Holiday: All duty hours are extra
+    const actInMin = parseTimeToMinutes(record.chkIn);
+    const actOutMin = parseTimeToMinutes(record.chkOut);
+    if (actInMin !== null && actOutMin !== null) {
+      let worked = actOutMin - actInMin;
+      if (worked < 0 && actOutMin < 360) worked += 1440;
+      totalExtraMin = Math.max(0, worked);
+    } else if (record.total) {
+      const parsedTotal = parseDurationToMinutes(record.total);
+      if (parsedTotal && parsedTotal > 0) totalExtraMin = parsedTotal;
+    }
+  }
+
+  // 5 minutes machine buffer tolerance (e.g. 55 minutes counts for 1 hr threshold)
+  const effectiveMin = totalExtraMin >= 55 && totalExtraMin < 60 ? 60 : totalExtraMin;
+
+  // Normal Day: 1st box: 1 hour, if has punch data (>= 60 min)
+  const box1Available = !isSpecial && effectiveMin >= 60;
+  const box1Val = box1Available ? '1:00' : '';
+
+  // Normal Day: 2nd box: 1+ upto 2 hours, according to punch data
+  const box2Available = !isSpecial && effectiveMin > 60;
+  let box2Val = '';
+  if (box2Available) {
+    if (effectiveMin >= 115) {
+      box2Val = '2:00';
+    } else {
+      box2Val = minutesToHoursMinutes(effectiveMin);
+    }
+  }
+
+  // Normal Day: 3rd box: 2+ hours: default max 3 H, but supervisor can increase up to available punch data
+  const box3Available = !isSpecial && effectiveMin > 120;
+  let box3Val = '';
+  if (box3Available) {
+    const capped3Min = Math.min(effectiveMin, 180); // default capped at 3:00
+    box3Val = minutesToHoursMinutes(capped3Min);
+  }
+  const box3MaxPunchVal = !isSpecial && effectiveMin > 0 ? minutesToHoursMinutes(effectiveMin) : '';
+
+  // Weekend / Holiday: only ONE box, Maximum 8H, supervisor can reduce to lowest 1H
+  const holidayAvailable = isSpecial && effectiveMin >= 60;
+  let holidayVal = '';
+  if (holidayAvailable) {
+    const cappedHolidayMin = Math.min(effectiveMin, 480); // Maximum 8:00
+    holidayVal = minutesToHoursMinutes(cappedHolidayMin);
+  }
+  const holidayMaxPunchVal = isSpecial && effectiveMin > 0 ? minutesToHoursMinutes(effectiveMin) : '';
+
+  return {
+    totalExtraMinutes: effectiveMin,
+    isSpecial,
+    box1: { available: box1Available, defaultVal: box1Val },
+    box2: { available: box2Available, defaultVal: box2Val },
+    box3: { available: box3Available, defaultVal: box3Val, maxPunchVal: box3MaxPunchVal },
+    holidayBox: { available: holidayAvailable, defaultVal: holidayVal, maxPunchVal: holidayMaxPunchVal }
+  };
 }
 
 /**
@@ -660,10 +774,11 @@ export default function App() {
       setIsEditingWorkArea(!savedArea.trim());
       setWorkAreaSuccessMsg(null);
 
-      // Initialize date states with all checkboxes unchecked and empty OT hours
+      // Initialize date states with 3 calculated tier defaults
       const initialStates: Record<string, DateSelectionState> = {};
       if (res.records) {
         res.records.forEach(r => {
+          const tiers = calculatePunchExtraTiers(r);
           initialStates[r.date] = {
             date: r.date,
             day: r.day,
@@ -674,6 +789,16 @@ export default function App() {
             chkOut: r.chkOut,
             total: r.total,
             selected: false,
+            selectedTier: null,
+            tierValues: tiers.isSpecial ? {
+              1: tiers.holidayBox.defaultVal,
+              2: '',
+              3: ''
+            } : {
+              1: tiers.box1.defaultVal,
+              2: tiers.box2.defaultVal,
+              3: tiers.box3.defaultVal
+            },
             otHours: '',
             taskDescription: '',
             file: null,
@@ -725,71 +850,93 @@ export default function App() {
     return true;
   };
 
-  // Checkbox toggle handler
-  // Note: Warning is NOT shown immediately on select; it shows when user tabs/clicks away without entering hours
-  const handleToggleDate = (date: string) => {
+  // Tier selection handler attached with the hour boxes
+  const handleSelectTier = (date: string, tier: 1 | 2 | 3) => {
     setDateStates(prev => {
       const current = prev[date];
       if (!current) return prev;
 
-      const nextSelected = !current.selected;
-      const nextStates = { ...prev };
+      const record = data?.records?.find(r => r.date === date);
+      if (!record) return prev;
 
-      if (nextSelected) {
-        // Newly selected date: do NOT show warning immediately
-        nextStates[date] = {
+      const tiers = calculatePunchExtraTiers(record);
+      const isSpecial = isWeekendOrHoliday(record.status);
+      const currentTierVal = current.tierValues?.[tier] !== undefined
+        ? current.tierValues[tier]
+        : (isSpecial 
+            ? tiers.holidayBox.defaultVal 
+            : (tier === 1 ? tiers.box1.defaultVal : tier === 2 ? tiers.box2.defaultVal : tiers.box3.defaultVal));
+
+      const isAvailable = isSpecial
+        ? (tiers.holidayBox.available || Boolean(currentTierVal && currentTierVal.trim()))
+        : (tier === 1 ? (tiers.box1.available || Boolean(currentTierVal && currentTierVal.trim())) :
+           tier === 2 ? (tiers.box2.available || Boolean(currentTierVal && currentTierVal.trim())) :
+           (tiers.box3.available || Boolean(currentTierVal && currentTierVal.trim())));
+
+      // "cannot tick if has no hour data"
+      if (!isAvailable || !currentTierVal || currentTierVal.trim() === '') {
+        alert("⚠️ এই অপশনের জন্য কোনো ঘণ্টা বা পাঞ্চ ডাটা নেই। পাঞ্চ ডাটা ছাড়া অথবা ঘণ্টা না লিখে টিক দেওয়া যাবে না।");
+        return prev;
+      }
+
+      // If already selected on this tier, toggle OFF (unselect date)
+      if (current.selected && current.selectedTier === tier) {
+        return {
+          ...prev,
+          [date]: {
+            ...current,
+            selected: false,
+            selectedTier: null,
+            otHours: '',
+            hoursError: null,
+            punchError: null,
+            descError: null
+          }
+        };
+      }
+
+      // Determine hour value for chosen tier (enforce min 1H, and max 8H for holidays/weekends)
+      let chosenHour = currentTierVal;
+      const durationMin = parseDurationToMinutes(chosenHour);
+      if (durationMin === null || durationMin < 60) {
+        chosenHour = '1:00';
+      } else if (isSpecial && durationMin > 480) {
+        chosenHour = '8:00';
+      }
+
+      let punchError: string | null = null;
+      const punchResult = validateOtAgainstPunch(record, chosenHour);
+      if (!punchResult.isValid) {
+        punchError = punchResult.message;
+      }
+
+      const defaultTiers = isSpecial 
+        ? { 1: tiers.holidayBox.defaultVal, 2: '', 3: '' }
+        : { 1: tiers.box1.defaultVal, 2: tiers.box2.defaultVal, 3: tiers.box3.defaultVal };
+
+      const updatedTiers = {
+        ...(current.tierValues || defaultTiers),
+        [tier]: chosenHour
+      };
+
+      return {
+        ...prev,
+        [date]: {
           ...current,
           selected: true,
-          touched: false,
+          selectedTier: tier,
+          tierValues: updatedTiers,
+          otHours: chosenHour,
           hoursError: null,
-          punchError: null,
+          punchError,
           descError: null
-        };
-
-        // If any other previously selected date was left empty, mark that other date with error
-        Object.keys(nextStates).forEach(k => {
-          if (k !== date && nextStates[k].selected && (!nextStates[k].otHours || nextStates[k].otHours.trim() === '')) {
-            nextStates[k] = {
-              ...nextStates[k],
-              touched: true,
-              hoursError: 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।'
-            };
-          }
-        });
-      } else {
-        // Unselected date: completely clear hours and any error
-        nextStates[date] = {
-          ...current,
-          selected: false,
-          otHours: '',
-          touched: false,
-          hoursError: null,
-          punchError: null,
-          descError: null,
-          taskDescription: '',
-          file: null,
-          fileName: undefined,
-          fileBase64: undefined,
-          mimeType: undefined
-        };
-      }
-
-      return nextStates;
+        }
+      };
     });
-
-    // Auto-focus the OT hours input immediately so user can type comfortably
-    setTimeout(() => {
-      const inputEl = document.getElementById(`ot-input-${date}`);
-      if (inputEl) {
-        inputEl.focus();
-        (inputEl as HTMLInputElement).select?.();
-      }
-    }, 60);
   };
 
-  // OT Hours change handler with real-time punch validation
-  const handleOtHoursChange = (date: string, val: string) => {
-    // Keep raw input characters, allow numbers and colons, max 5 characters
+  // Change value inside one of the tier boxes
+  const handleTierValueChange = (date: string, tier: 1 | 2 | 3, val: string) => {
     const filtered = val.replace(/[^0-9:]/g, '').slice(0, 5);
     if ((filtered.match(/:/g) || []).length > 1) return;
 
@@ -797,81 +944,101 @@ export default function App() {
       const current = prev[date];
       if (!current) return prev;
 
-      const matchingRecord = data?.records?.find(r => r.date === date);
-      let punchError: string | null = null;
-      let hoursError: string | null = null;
+      const record = data?.records?.find(r => r.date === date);
+      const tiers = record ? calculatePunchExtraTiers(record) : null;
+      const isSpecial = record ? isWeekendOrHoliday(record.status) : false;
+      const baseTiers = current.tierValues || (isSpecial 
+        ? { 1: tiers?.holidayBox.defaultVal || '', 2: '', 3: '' }
+        : { 1: tiers?.box1.defaultVal || '', 2: tiers?.box2.defaultVal || '', 3: tiers?.box3.defaultVal || '' }
+      );
 
-      if (filtered === '') {
-        // If user already touched/blurred this field before and now clears it, keep mandatory error
-        if (current.touched) {
-          hoursError = 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।';
-        }
-      } else {
-        const durationMin = parseDurationToMinutes(filtered);
-        if (durationMin !== null && durationMin >= 60) {
-          // Valid hours provided, clear mandatory hours error
-          hoursError = null;
-          if (matchingRecord) {
-            const punchResult = validateOtAgainstPunch(matchingRecord, filtered);
-            if (!punchResult.isValid) {
-              punchError = punchResult.message;
-            }
-          }
-        }
+      const updatedTiers = {
+        ...baseTiers,
+        [tier]: filtered
+      };
+
+      const isThisTierSelected = current.selected && current.selectedTier === tier;
+      const updatedOtHours = isThisTierSelected ? filtered : current.otHours;
+
+      let punchError = current.punchError;
+      if (isThisTierSelected && record && filtered) {
+        const punchResult = validateOtAgainstPunch(record, filtered);
+        punchError = punchResult.isValid ? null : punchResult.message;
       }
 
       return {
         ...prev,
         [date]: {
           ...current,
-          otHours: filtered,
-          hoursError,
+          tierValues: updatedTiers,
+          otHours: updatedOtHours,
           punchError
         }
       };
     });
   };
 
-  // OT Hours blur handler - triggers when user clicks away, tabs away, or navigates away
-  const handleOtHoursBlur = (date: string) => {
+  // Blur handler for tier box input: enforce "cannot be less than 1 hour for any date", max 8H for holidays
+  const handleTierValueBlur = (date: string, tier: 1 | 2 | 3) => {
     setDateStates(prev => {
       const current = prev[date];
       if (!current) return prev;
 
-      // If user left the input empty after clicking or tabbing away, enforce mandatory requirement now!
-      if (!current.otHours || current.otHours.trim() === '') {
-        return {
-          ...prev,
-          [date]: {
-            ...current,
-            touched: true,
-            hoursError: 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)। না চাইলে তারিখটি আনসিলেক্ট করুন।'
-          }
-        };
+      const record = data?.records?.find(r => r.date === date);
+      const tiers = record ? calculatePunchExtraTiers(record) : null;
+      const isSpecial = record ? isWeekendOrHoliday(record.status) : false;
+      const baseTiers = current.tierValues || (isSpecial
+        ? { 1: tiers?.holidayBox.defaultVal || '', 2: '', 3: '' }
+        : { 1: tiers?.box1.defaultVal || '', 2: tiers?.box2.defaultVal || '', 3: tiers?.box3.defaultVal || '' }
+      );
+
+      const rawVal = baseTiers[tier];
+      if (!rawVal || rawVal.trim() === '') {
+        if (current.selected && current.selectedTier === tier) {
+          return {
+            ...prev,
+            [date]: {
+              ...current,
+              otHours: '',
+              hoursError: 'ডিউটি ঘণ্টা প্রদান বাধ্যতামূলক (সর্বনিম্ন ১:০০)।'
+            }
+          };
+        }
+        return prev;
       }
 
-      const formatted = formatDurationString(current.otHours);
-      const matchingRecord = data?.records?.find(r => r.date === date);
-      let punchError: string | null = null;
-      let hoursError: string | null = null;
-
+      let formatted = formatDurationString(rawVal);
       const durationMin = parseDurationToMinutes(formatted);
+
+      // Enforce: lowest 1H for any date
       if (durationMin === null || durationMin < 60) {
-        hoursError = 'ডিউটি সময় সর্বনিম্ন ১:০০ ঘণ্টা (hh:mm) হতে হবে।';
-      } else if (matchingRecord) {
-        const punchResult = validateOtAgainstPunch(matchingRecord, formatted);
-        if (!punchResult.isValid) {
-          punchError = punchResult.message;
-        }
+        formatted = '1:00';
+      } else if (isSpecial && durationMin > 480) {
+        // Enforce: Maximum 8H for holidays & weekends
+        formatted = '8:00';
+      }
+
+      const updatedTiers = {
+        ...baseTiers,
+        [tier]: formatted
+      };
+
+      const isThisTierSelected = current.selected && current.selectedTier === tier;
+      const updatedOtHours = isThisTierSelected ? formatted : current.otHours;
+
+      let punchError: string | null = null;
+      if (isThisTierSelected && record) {
+        const punchResult = validateOtAgainstPunch(record, formatted);
+        if (!punchResult.isValid) punchError = punchResult.message;
       }
 
       return {
         ...prev,
         [date]: {
           ...current,
-          touched: true,
-          otHours: formatted,
-          hoursError,
+          tierValues: updatedTiers,
+          otHours: updatedOtHours,
+          hoursError: null,
           punchError
         }
       };
@@ -955,6 +1122,18 @@ export default function App() {
 
   // Validate all selected dates before proceeding to OTP
   const validateFormAndDates = (): boolean => {
+    // Check if location (Work Area) is empty: Mandatory for first entry
+    if (!workArea || !workArea.trim()) {
+      setIsEditingWorkArea(true);
+      setTimeout(() => {
+        const el = document.getElementById('workAreaInput');
+        el?.focus();
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+      alert("⚠️ কর্মীর Work Area (লোকেশন) প্রদান করা বাধ্যতামূলক!\n\nযেহেতু এই কর্মীর লোকেশন ডাটাবেজে এখনো দেওয়া নেই (প্রথম এন্ট্রি), অনুগ্রহ করে ওপরে Work Area ফিল্ডে উনার কাজের স্থান বা অফিসের লোকেশন উল্লেখ করুন।");
+      return false;
+    }
+
     const selectedList = Object.values(dateStates).filter(d => d.selected);
     if (selectedList.length === 0) {
       alert("⚠️ অনুগ্রহ করে অ্যাটেনডেন্স তালিকা থেকে কমপক্ষে একটি প্রযোজ্য তারিখ সিলেক্ট করুন।\n(Please select at least one attendance date from the table).");
@@ -1265,6 +1444,16 @@ export default function App() {
 
   const handlePrint = (e: React.MouseEvent) => {
     e.preventDefault();
+    if (!workArea || !workArea.trim()) {
+      setIsEditingWorkArea(true);
+      setTimeout(() => {
+        const el = document.getElementById('workAreaInput');
+        el?.focus();
+        el?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }, 100);
+      alert("⚠️ কর্মীর Work Area (লোকেশন) প্রদান করা বাধ্যতামূলক!\n\nপ্রিন্ট করার পূর্বে অনুগ্রহ করে ওপরে কর্মীর কাজের স্থান বা অফিসের লোকেশন (Work Area) প্রদান করুন।");
+      return;
+    }
     if (!validateBeforeNavigating()) {
       const selectedList = Object.values(dateStates).filter(d => d.selected);
       const missing = selectedList.find(d => !d.otHours || d.otHours.trim() === '');
@@ -1420,9 +1609,19 @@ export default function App() {
               {/* WORK AREA (1-LINE BOX WITH SUBMIT & CHANGE BUTTON) */}
               <div className="col-span-2 md:col-span-4 pt-3 border-t border-[#034EA2]/15 no-print">
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 mb-1.5">
-                  <label htmlFor="workAreaInput" className="text-xs sm:text-sm font-extrabold text-gray-800 flex items-center gap-1.5">
+                  <label htmlFor="workAreaInput" className="text-xs sm:text-sm font-extrabold text-gray-800 flex items-center gap-1.5 flex-wrap">
                     <MapPin className="w-4 h-4 text-[#034EA2]" />
                     <span>Work Area</span>
+                    {!workArea.trim() ? (
+                      <span className="text-rose-600 font-bold text-xs bg-rose-50 border border-rose-300 px-2.5 py-0.5 rounded-full flex items-center gap-1 shadow-2xs">
+                        <AlertTriangle className="w-3 h-3 text-rose-600" />
+                        <span>বাধ্যতামূলক (প্রথম এন্ট্রির জন্য)</span>
+                      </span>
+                    ) : (
+                      <span className="text-slate-500 font-medium text-xs">
+                        (কর্মস্থল / কাজের লোকেশন)
+                      </span>
+                    )}
                   </label>
                   {workAreaLastUpdated && (
                     <span className="text-[11px] text-[#034EA2] font-semibold bg-blue-100/70 px-2.5 py-0.5 rounded-md flex items-center gap-1">
@@ -1431,6 +1630,16 @@ export default function App() {
                     </span>
                   )}
                 </div>
+
+                {/* Inline Banner when location is not given */}
+                {!workArea.trim() && (
+                  <div className="mb-2 p-2.5 bg-amber-50/90 border-l-4 border-amber-500 text-amber-900 text-xs sm:text-sm font-semibold rounded-r-lg flex items-center gap-2">
+                    <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      এই কর্মীর লোকেশন ডাটাবেজে এখনো যুক্ত নেই। প্রথম এন্ট্রির ক্ষেত্রে Work Area (লোকেশন) প্রদান করা বাধ্যতামূলক।
+                    </span>
+                  </div>
+                )}
 
                 {/* Inline Confirmation Toast */}
                 {workAreaSuccessMsg && (
@@ -1468,6 +1677,7 @@ export default function App() {
                         <input
                           type="text"
                           id="workAreaInput"
+                          required={!workArea.trim()}
                           value={workArea}
                           onChange={(e) => {
                             setWorkArea(e.target.value);
@@ -1480,7 +1690,11 @@ export default function App() {
                             }
                           }}
                           placeholder="উনি কোন লোকেশনে কাজ করেন, বিল্ডিং এর নাম, ফ্লোর নাম্বার, প্রযোজ্য ক্ষেত্রে অফিসের নাম/রুম নাম্বার সহ উল্লেখ করুন।"
-                          className="w-full pl-9 pr-3 py-2.5 text-sm rounded-lg border-2 border-gray-300 focus:border-[#034EA2] focus:ring-4 focus:ring-[#034EA2]/10 outline-none transition-all font-medium text-gray-900 bg-white"
+                          className={`w-full pl-9 pr-3 py-2.5 text-sm rounded-lg border-2 outline-none transition-all font-medium text-gray-900 bg-white ${
+                            !workArea.trim()
+                              ? 'border-amber-400 focus:border-amber-600 focus:ring-4 focus:ring-amber-200/50 bg-amber-50/20'
+                              : 'border-gray-300 focus:border-[#034EA2] focus:ring-4 focus:ring-[#034EA2]/10'
+                          }`}
                           autoFocus={isEditingWorkArea}
                         />
                         <MapPin className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
@@ -1591,11 +1805,11 @@ export default function App() {
                 <Clock className="w-5 h-5 text-[#034EA2] shrink-0 mt-0.5" />
                 <div className="text-sm font-semibold text-slate-900 space-y-1">
                   <p className="font-bold text-[#034EA2] text-sm sm:text-base">
-                    নিচের Attendance Report এ Overtime এবং holiday/Weekend Duty এর তারিখ সিলেক্ট করুন।
+                    নিচের Attendance Report এ প্রতিটি তারিখের পাঞ্চ ডাটা অনুযায়ী অতিরিক্ত ঘণ্টা স্বয়ংক্রিয়ভাবে দেওয়া হয়েছে। টিক দিয়ে অনুমোদন করুন:
                   </p>
                   <ul className="list-disc pl-5 space-y-0.5 text-xs sm:text-sm text-gray-800 font-medium">
-                    <li>সাধারণ কর্মদিবসে overtime কত ঘন্টা করেছে সে তথ্য দিন (ফরম্যাট: hh:mm, সর্বনিম্ন ১:০০)</li>
-                    <li>Holiday/Weekend এর ক্ষেত্রে উক্ত দিন উনি কি কাজ করেছিলেন সেটা লিখুন এবং ডিউটি ঘণ্টা উল্লেখ করুন।</li>
+                    <li>প্রতিটি বক্সের সাথে যুক্ত টিকবক্সে ক্লিক করলেই তারিখ সিলেক্ট হয়ে যাবে (পাঞ্চ ডাটা না থাকলে টিক দেওয়া যাবে না)।</li>
+                    <li>Holiday/Weekend ডিউটি হলে নিচে কাজের বিবরণ (Task Description) লিখুন।</li>
                   </ul>
                 </div>
               </div>
@@ -1604,14 +1818,11 @@ export default function App() {
               </div>
             </div>
 
-            {/* ATTENDANCE SUMMARY TABLE WITH IN-TABLE OT SELECTION */}
+            {/* ATTENDANCE SUMMARY TABLE WITH 3-TIER EXTRA HOUR SELECTION */}
             <div className="overflow-x-auto border-2 border-gray-200 rounded-xl shadow-md">
               <table className="w-full text-sm text-left text-gray-800">
                 <thead className="text-xs text-white uppercase bg-[#034EA2] print:text-black print:bg-gray-100">
                   <tr>
-                    <th scope="col" className="w-12 px-3 py-3.5 text-center no-print">
-                      <span className="text-[11px] font-black tracking-wider">SELECT</span>
-                    </th>
                     <th scope="col" className="px-3 py-3.5 whitespace-nowrap">DATE</th>
                     <th scope="col" className="px-3 py-3.5 whitespace-nowrap">DAY</th>
                     <th scope="col" className="px-3 py-3.5 whitespace-nowrap">SCH IN</th>
@@ -1620,10 +1831,17 @@ export default function App() {
                     <th scope="col" className="px-3 py-3.5 whitespace-nowrap">OUT TIME</th>
                     <th scope="col" className="px-3 py-3.5 whitespace-nowrap">WORKING HOURS</th>
                     <th scope="col" className="px-3 py-3.5 whitespace-nowrap">STATUS</th>
-                    <th scope="col" className="px-3 py-3.5 text-center whitespace-nowrap font-black bg-[#002652] print:bg-gray-200">
-                      <div className="flex items-center justify-center gap-1">
-                        <span>OT HOURS</span>
-                        <span className="text-red-300 font-black text-sm">*</span>
+                    <th scope="col" className="px-3 py-3.5 text-center whitespace-nowrap font-black bg-[#002652] print:bg-gray-200 min-w-[275px]">
+                      <div className="flex flex-col items-center justify-center gap-1">
+                        <div className="flex items-center gap-1.5 text-xs text-white uppercase font-extrabold tracking-wider">
+                          <span>EXTRA / OT HOURS</span>
+                          <span className="text-amber-300 font-black text-sm">*</span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-1.5 w-full text-[10px] font-bold no-print pt-1 border-t border-blue-400/30">
+                          <div className="text-center bg-blue-900/80 py-0.5 px-1 rounded border border-blue-400/30 text-blue-100" title="১ ঘণ্টা (পাঞ্চ ডাটা থাকলে)">1 Hour</div>
+                          <div className="text-center bg-blue-900/80 py-0.5 px-1 rounded border border-blue-400/30 text-blue-100" title="১+ থেকে ২ ঘণ্টা (পাঞ্চ ডাটা অনুযায়ী)">1+ to 2 Hrs</div>
+                          <div className="text-center bg-blue-900/80 py-0.5 px-1 rounded border border-blue-400/30 text-blue-100" title="ডিফল্ট সর্বোচ্চ ৩ ঘণ্টা (পাঞ্চ অনুযায়ী বাড়ানো যাবে)">2+ to 3H*</div>
+                        </div>
                       </div>
                     </th>
                   </tr>
@@ -1636,6 +1854,7 @@ export default function App() {
                       taskDescription: '',
                       file: null
                     };
+                    const tiers = calculatePunchExtraTiers(record);
                     const isSelected = rowState.selected;
                     const isSpecial = isWeekendOrHoliday(record.status);
                     const wordCount = getWordCount(rowState.taskDescription);
@@ -1657,30 +1876,17 @@ export default function App() {
                               : 'hover:bg-gray-50'
                           }`}
                         >
-                          {/* 1. SELECT CHECKBOX */}
-                          <td className="px-3 py-3 text-center no-print">
-                            <label className="inline-flex items-center cursor-pointer p-1">
-                              <input 
-                                type="checkbox" 
-                                checked={isSelected}
-                                onChange={() => handleToggleDate(record.date)}
-                                className="w-5 h-5 rounded text-[#034EA2] accent-[#034EA2] focus:ring-[#034EA2] border-gray-300 cursor-pointer"
-                                aria-label={`Select date ${record.date}`}
-                              />
-                            </label>
-                          </td>
-
-                          {/* 2. DATE */}
+                          {/* 1. DATE */}
                           <td className="px-3 py-3 font-semibold whitespace-nowrap">
                             <div className="flex items-center gap-1.5">
                               {isSelected && (
-                                <span className={`inline-block w-2 h-2 rounded-full no-print ${hasError ? 'bg-red-500 animate-ping' : 'bg-[#034EA2]'}`}></span>
+                                <span className={`inline-block w-2.5 h-2.5 rounded-full no-print ${hasError ? 'bg-red-500 animate-ping' : 'bg-[#034EA2]'}`} title="সিলেক্ট করা হয়েছে"></span>
                               )}
                               <span>{record.date}</span>
                             </div>
                           </td>
 
-                          {/* 3. DAY */}
+                          {/* 2. DAY */}
                           <td className="px-3 py-3 whitespace-nowrap text-gray-700">
                             <div className="flex items-center gap-1.5">
                               <span>{record.day}</span>
@@ -1702,22 +1908,22 @@ export default function App() {
                             </div>
                           </td>
 
-                          {/* 4. SCH IN */}
+                          {/* 3. SCH IN */}
                           <td className="px-3 py-3 whitespace-nowrap text-gray-600">{record.schIn || '-'}</td>
 
-                          {/* 5. SCH OUT */}
+                          {/* 4. SCH OUT */}
                           <td className="px-3 py-3 whitespace-nowrap text-gray-600">{record.schOut || '-'}</td>
 
-                          {/* 6. IN */}
+                          {/* 5. IN */}
                           <td className="px-3 py-3 whitespace-nowrap font-medium text-gray-800">{record.chkIn || '-'}</td>
 
-                          {/* 7. OUT */}
+                          {/* 6. OUT */}
                           <td className="px-3 py-3 whitespace-nowrap font-medium text-gray-800">{record.chkOut || '-'}</td>
 
-                          {/* 8. TOTAL */}
+                          {/* 7. TOTAL */}
                           <td className="px-3 py-3 whitespace-nowrap text-gray-700">{record.total || '-'}</td>
 
-                          {/* 9. STATUS */}
+                          {/* 8. STATUS */}
                           <td className="px-3 py-3 whitespace-nowrap">
                             <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${
                               isSpecial 
@@ -1730,39 +1936,157 @@ export default function App() {
                             </span>
                           </td>
 
-                          {/* 10. OT HOURS INPUT */}
-                          <td className="px-3 py-2 text-center whitespace-nowrap">
+                          {/* 9. EXTRA / OT HOURS */}
+                          <td className="px-2 py-2.5 text-center whitespace-nowrap">
                             <div className="flex flex-col items-center justify-center">
-                              {/* Screen View Input */}
-                              <div className="no-print">
-                                <input 
-                                  id={`ot-input-${record.date}`}
-                                  type="text"
-                                  inputMode="text"
-                                  required={isSelected}
-                                  value={rowState.otHours}
-                                  disabled={!isSelected}
-                                  onChange={(e) => handleOtHoursChange(record.date, e.target.value)}
-                                  onBlur={() => handleOtHoursBlur(record.date)}
-                                  placeholder={isSelected ? "hh:mm *" : "-"}
-                                  maxLength={5}
-                                  className={`w-20 h-8 text-center font-bold text-sm rounded border transition-all ${
-                                    !isSelected 
-                                      ? 'bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed' 
-                                      : hasHoursError || hasPunchError
-                                        ? 'bg-red-50 text-red-700 border-red-500 ring-2 ring-red-400'
-                                        : 'bg-white text-gray-900 border-blue-400 focus:ring-2 focus:ring-[#034EA2] focus:border-[#034EA2]'
-                                  }`}
-                                  title={
-                                    !isSelected 
-                                      ? "তারিখ সিলেক্ট করে ডিউটি ঘণ্টা লিখুন" 
-                                      : "অনুমোদিত ডিউটি ঘণ্টা (বাধ্যতামূলক, ফরম্যাট: hh:mm, সর্বনিম্ন ১:০০)"
-                                  }
-                                />
-                              </div>
+                              {/* Screen View: Holiday & Weekend has ONLY ONE BOX (Max 8H, min 1H) */}
+                              {isSpecial ? (
+                                <div id={`ot-input-${record.date}`} className="no-print flex items-center justify-center">
+                                  {(() => {
+                                    const tier = 1;
+                                    const isAvailable = tiers.holidayBox.available;
+                                    const defaultVal = tiers.holidayBox.defaultVal;
+                                    const tierVal = rowState.tierValues?.[tier] !== undefined 
+                                      ? rowState.tierValues[tier] 
+                                      : defaultVal;
+
+                                    const hasHourData = Boolean((tierVal && tierVal.trim() !== '') || isAvailable);
+                                    const isTierChecked = isSelected && Boolean(rowState.otHours && rowState.otHours.trim() !== '');
+
+                                    return (
+                                      <div
+                                        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg border transition-all ${
+                                          isTierChecked
+                                            ? 'bg-purple-100/90 border-purple-600 ring-2 ring-purple-400/30 shadow-xs'
+                                            : hasHourData
+                                              ? 'bg-purple-50/70 hover:bg-purple-100/50 border-purple-200 hover:border-purple-400'
+                                              : 'bg-gray-100/70 border-gray-200 opacity-60'
+                                        }`}
+                                        title={
+                                          hasHourData 
+                                            ? `হলিডে/উইকেন্ড ডিউটি: সর্বোচ্চ ৮:০০ ঘণ্টা (পাঞ্চ ডাটা: ${tiers.holidayBox.maxPunchVal || tiers.holidayBox.defaultVal} hrs, সর্বনিম্ন ১:০০ ঘণ্টা পর্যন্ত কমানো যাবে)`
+                                            : 'পাঞ্চ ডাটা নেই (ঘণ্টা লিখলে সক্রিয় হবে)'
+                                        }
+                                      >
+                                        {/* Attached Tick Box */}
+                                        <input
+                                          type="checkbox"
+                                          checked={isTierChecked}
+                                          disabled={!hasHourData}
+                                          onChange={() => handleSelectTier(record.date, tier)}
+                                          className={`w-4 h-4 rounded text-purple-700 accent-purple-700 focus:ring-purple-600 transition-transform ${
+                                            !hasHourData 
+                                              ? 'cursor-not-allowed opacity-40' 
+                                              : 'cursor-pointer hover:scale-105'
+                                          }`}
+                                          aria-label={`Select holiday duty for date ${record.date}`}
+                                        />
+
+                                        {/* Single Editable Hour Input Box (Max 8H, min 1H) */}
+                                        <input
+                                          type="text"
+                                          inputMode="text"
+                                          value={tierVal}
+                                          onChange={(e) => handleTierValueChange(record.date, tier, e.target.value)}
+                                          onBlur={() => handleTierValueBlur(record.date, tier)}
+                                          placeholder={isAvailable ? defaultVal : '8:00'}
+                                          maxLength={5}
+                                          className={`w-16 h-7 text-center font-black text-xs rounded transition-all outline-none ${
+                                            isTierChecked
+                                              ? 'bg-white text-purple-900 border border-purple-400 shadow-2xs'
+                                              : hasHourData
+                                                ? 'bg-white text-gray-900 border border-purple-300 focus:border-purple-600'
+                                                : 'bg-transparent text-gray-400 border border-dashed border-gray-300 placeholder:text-gray-400'
+                                          }`}
+                                          title="হলিডে/উইকেন্ড: সর্বোচ্চ ৮:০০ ঘণ্টা, সর্বনিম্ন ১:০০ ঘণ্টা"
+                                        />
+
+                                        <span className="text-[10px] font-bold text-purple-800 uppercase px-1.5 py-0.5 bg-purple-200/70 rounded">
+                                          Max 8H
+                                        </span>
+                                      </div>
+                                    );
+                                  })()}
+                                </div>
+                              ) : (
+                                /* Screen View: Normal Working Day has 3 Boxes */
+                                <div id={`ot-input-${record.date}`} className="no-print flex items-center justify-center gap-1.5">
+                                  {([1, 2, 3] as const).map((tier) => {
+                                    const tierAvailable =
+                                      tier === 1 ? tiers.box1.available :
+                                      tier === 2 ? tiers.box2.available :
+                                      tiers.box3.available;
+
+                                    const defaultVal =
+                                      tier === 1 ? tiers.box1.defaultVal :
+                                      tier === 2 ? tiers.box2.defaultVal :
+                                      tiers.box3.defaultVal;
+
+                                    const tierVal = rowState.tierValues?.[tier] !== undefined 
+                                      ? rowState.tierValues[tier] 
+                                      : defaultVal;
+
+                                    const hasHourData = Boolean((tierVal && tierVal.trim() !== '') || tierAvailable);
+                                    const isTierChecked = isSelected && (rowState.selectedTier === tier || (!rowState.selectedTier && rowState.otHours === tierVal && tierVal !== ''));
+
+                                    const tierLabel = tier === 1 ? '1:00' : tier === 2 ? '1-2h' : '2-3h';
+                                    const tierTitle = 
+                                      tier === 1 ? '১ ঘণ্টা (পাঞ্চ ডাটা থাকলে)' :
+                                      tier === 2 ? '১+ থেকে ২ ঘণ্টা পর্যন্ত (পাঞ্চ ডাটা অনুযায়ী)' :
+                                      `২+ ঘণ্টা: ডিফল্ট সর্বোচ্চ ৩:০০ ঘণ্টা (উপলব্ধ পাঞ্চ: ${tiers.box3.maxPunchVal || '৩:০০'} hrs পর্যন্ত বাড়ানো সম্ভব)`;
+
+                                    return (
+                                      <div
+                                        key={tier}
+                                        className={`inline-flex items-center gap-1 px-1.5 py-1 rounded-lg border transition-all ${
+                                          isTierChecked
+                                            ? 'bg-blue-100/90 border-[#034EA2] ring-2 ring-[#034EA2]/30 shadow-xs'
+                                            : hasHourData
+                                              ? 'bg-white hover:bg-blue-50/50 border-gray-300 hover:border-blue-400'
+                                              : 'bg-gray-100/70 border-gray-200 opacity-60'
+                                        }`}
+                                        title={hasHourData ? tierTitle : 'পাঞ্চ ডাটা নেই (ঘণ্টা লিখলে সক্রিয় হবে)'}
+                                      >
+                                        {/* Attached Tick Box */}
+                                        <input
+                                          type="checkbox"
+                                          checked={isTierChecked}
+                                          disabled={!hasHourData}
+                                          onChange={() => handleSelectTier(record.date, tier)}
+                                          className={`w-4 h-4 rounded text-[#034EA2] accent-[#034EA2] focus:ring-[#034EA2] transition-transform ${
+                                            !hasHourData 
+                                              ? 'cursor-not-allowed opacity-40' 
+                                              : 'cursor-pointer hover:scale-105'
+                                          }`}
+                                          aria-label={`Select tier ${tier} for date ${record.date}`}
+                                        />
+
+                                        {/* Editable Hour Input Box */}
+                                        <input
+                                          type="text"
+                                          inputMode="text"
+                                          value={tierVal}
+                                          onChange={(e) => handleTierValueChange(record.date, tier, e.target.value)}
+                                          onBlur={() => handleTierValueBlur(record.date, tier)}
+                                          placeholder={tierAvailable ? defaultVal : tierLabel}
+                                          maxLength={5}
+                                          className={`w-14 h-7 text-center font-bold text-xs rounded transition-all outline-none ${
+                                            isTierChecked
+                                              ? 'bg-white text-[#034EA2] font-black border border-[#034EA2]/40 shadow-2xs'
+                                              : hasHourData
+                                                ? 'bg-gray-50/80 hover:bg-white text-gray-900 border border-gray-300 focus:border-[#034EA2] focus:bg-white'
+                                                : 'bg-transparent text-gray-400 border border-dashed border-gray-300 placeholder:text-gray-400'
+                                          }`}
+                                          title={tier === 3 ? `ডিফল্ট সর্বোচ্চ ৩ ঘণ্টা, পাঞ্চ অনুযায়ী (${tiers.box3.maxPunchVal || '৩+'} hrs) বাড়ানো যাবে` : "এডিটেবল বক্স: সর্বনিম্ন ১:০০ ঘণ্টা"}
+                                        />
+                                      </div>
+                                    );
+                                  })}
+                                </div>
+                              )}
 
                               {/* Print View Display */}
-                              <div className="hidden print:block font-bold">
+                              <div className="hidden print:block font-bold text-center">
                                 {isSelected && rowState.otHours ? `${rowState.otHours} hrs` : '-'}
                               </div>
                             </div>
@@ -1772,7 +2096,7 @@ export default function App() {
                         {/* REAL-TIME VALIDATION WARNING FOR NORMAL DAYS */}
                         {isSelected && !isSpecial && (hasHoursError || hasPunchError) && (
                           <tr className="bg-red-50/80 border-b border-red-200 no-print">
-                            <td colSpan={10} className="px-4 py-2.5">
+                            <td colSpan={9} className="px-4 py-2.5">
                               <div className="flex items-start gap-2 text-red-800 text-xs sm:text-sm font-semibold">
                                 <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
                                 <div>
@@ -1787,7 +2111,7 @@ export default function App() {
                         {/* WEEKEND & HOLIDAY EXPANDED ROW (Triggered ONLY when STATUS is WEEKEND or HOLIDAY and selected) */}
                         {isSelected && isSpecial && (
                           <tr className="bg-blue-50/40 border-b-2 border-blue-200 print:bg-white">
-                            <td colSpan={10} className="p-4 sm:p-5">
+                            <td colSpan={9} className="p-4 sm:p-5">
                               <div className="rounded-xl border border-blue-200/90 bg-white/95 p-4 space-y-4 shadow-xs">
                                 
                                 {/* Header badge for Weekend/Holiday with integrated Duty Hours input */}
