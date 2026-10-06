@@ -23,33 +23,53 @@
   line-height: 1;
 }
 
-/* Print Specific Optimizations */
+/* Print Specific Optimizations for Clean, Low-Ink Printing */
 @media print {
   @page {
     size: A4 portrait;
     margin: 8mm 10mm;
   }
 
+  /* Force economy ink mode and disable background graphic fills */
   html, body {
-    background-color: white !important;
-    color: #111827 !important;
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
     height: auto !important;
     min-height: initial !important;
     padding: 0 !important;
     margin: 0 !important;
-    -webkit-print-color-adjust: exact;
-    print-color-adjust: exact;
     font-size: 8.5pt !important;
+    -webkit-print-color-adjust: economy !important;
+    print-color-adjust: economy !important;
   }
 
-  .no-print,
-  button,
-  input[type="checkbox"],
-  input[type="file"],
-  .no-print-area {
-    display: none !important;
+  /* Strip all shadows, gradients, and heavy graphic fills in print to save ink */
+  *, *::before, *::after {
+    box-shadow: none !important;
+    text-shadow: none !important;
+    background-image: none !important;
+    filter: none !important;
   }
 
+  /* Strip background color fills from all containers, banners, and cells */
+  div, section, article, header, main, table, tr, th, td, span, strong, p, ul, li {
+    background-color: transparent !important;
+    background: transparent !important;
+  }
+
+  /* Ensure pure white paper base */
+  body, html, #root, .print-container, table, thead, tbody, tr {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+  }
+
+  /* Pure black text for maximum sharpness and low CMYK/toner ink usage */
+  h1, h2, h3, h4, h5, h6, p, span, strong, td, th, div, label, li {
+    color: #000000 !important;
+  }
+
+  /* Clean minimal lines for table and cards */
   #root, .print-container {
     box-shadow: none !important;
     max-width: 100% !important;
@@ -57,7 +77,12 @@
     padding: 0 !important;
     margin: 0 !important;
     border: none !important;
-    background-color: white !important;
+  }
+
+  #resultArea > div,
+  .print-container div {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
   }
 
   table {
@@ -65,22 +90,66 @@
     width: 100% !important;
     border-collapse: collapse !important;
     page-break-inside: auto;
+    background: #ffffff !important;
+  }
+
+  thead, thead tr, thead th {
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
   }
 
   tr {
     page-break-inside: avoid;
     page-break-after: auto;
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    border-left: none !important;
   }
 
   th, td {
-    border: 1px solid #d1d5db !important;
+    border: 1px solid #71717a !important;
     padding: 3px 5px !important;
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
   }
 
   th {
-    background-color: #f3f4f6 !important;
-    color: #111827 !important;
+    background-color: #ffffff !important;
+    background: #ffffff !important;
+    color: #000000 !important;
     font-weight: 700 !important;
+    border-bottom: 2px solid #000000 !important;
+  }
+
+  /* Low ink on status badges and cards - zero fill, simple text */
+  td span,
+  span[class*="bg-"],
+  div[class*="bg-"] {
+    background-color: transparent !important;
+    background: transparent !important;
+    color: #000000 !important;
+    border-color: #a1a1aa !important;
+  }
+
+  /* Strip decorative bars, pill dots, and graphical meters to eliminate heavy ink usage */
+  div[class*="h-1.5"],
+  div[class*="h-1"],
+  span[class*="rounded-full"],
+  div[class*="rounded-full"] {
+    background-color: transparent !important;
+    background: transparent !important;
+    border-color: transparent !important;
+  }
+
+  /* Hide screen-only interactive elements */
+  .no-print,
+  button,
+  input[type="checkbox"],
+  input[type="file"],
+  .no-print-area {
+    display: none !important;
   }
 
   .print-signatures {

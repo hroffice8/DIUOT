@@ -25,7 +25,8 @@ import {
   CalendarDays,
   Mail,
   User,
-  Pin
+  Pin,
+  Info
 } from 'lucide-react';
 
 // --- CONSTANTS & CONFIGURATION ---
@@ -1490,20 +1491,20 @@ export default function App() {
         
         {/* BRANDED HEADER */}
         {view !== 'SUCCESS' && (
-          <div className="mb-6">
-            <div className="text-center border-b-4 border-[#034EA2] pb-4 mb-4">
+          <div className="mb-6 print:mb-2">
+            <div className="text-center border-b-4 border-[#034EA2] pb-4 mb-4 print:border-b-2 print:border-black print:pb-2 print:mb-2">
               <div className="flex items-center justify-center no-print mb-2">
                 <span className="text-xl md:text-2xl font-bold uppercase tracking-wide text-[#034EA2] bg-blue-50 border border-blue-200 px-6 py-2 rounded-lg">
                   Daffodil International University
                 </span>
               </div>
 
-              <h1 id="mainTitle" className="text-xl sm:text-2xl md:text-3xl font-extrabold text-[#034EA2] uppercase tracking-wide">
+              <h1 id="mainTitle" className="text-xl sm:text-2xl md:text-3xl font-extrabold text-[#034EA2] uppercase tracking-wide print:text-black print:text-lg">
                 {view === 'REPORT' 
                   ? `${t('reportTitleBase', 'Holiday and Overtime Duty Review Portal:')} ${targetMonthText}` 
                   : (sysConfig?.appTitle ? sysConfig.appTitle.replace(/DIU\s+/i, '') : APP_TITLE)}
               </h1>
-              <p className="text-xs sm:text-sm text-gray-500 mt-1 font-semibold">
+              <p className="text-xs sm:text-sm text-gray-500 mt-1 font-semibold print:hidden">
                  
               </p>
             </div>
@@ -1588,22 +1589,22 @@ export default function App() {
           <div id="resultArea" className="space-y-6">
             
             {/* EMPLOYEE INFO BANNER */}
-            <div className="bg-[#f0f6fc] p-4 sm:p-5 rounded-xl border border-[#034EA2]/20 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm shadow-sm">
+            <div className="bg-[#f0f6fc] p-4 sm:p-5 rounded-xl border border-[#034EA2]/20 grid grid-cols-2 md:grid-cols-4 gap-4 text-sm shadow-sm print:bg-white print:border print:border-gray-400 print:shadow-none print:p-2.5 print:rounded-none">
               <div>
-                <span className="text-gray-500 block text-xs uppercase font-bold">{t('lblId', "Employee ID")}</span>
-                <strong className="text-[#034EA2] text-base font-black">{data.info?.id}</strong>
+                <span className="text-gray-500 block text-xs uppercase font-bold print:text-gray-700">{t('lblId', "Employee ID")}</span>
+                <strong className="text-[#034EA2] text-base font-black print:text-black">{data.info?.id}</strong>
               </div>
               <div>
-                <span className="text-gray-500 block text-xs uppercase font-bold">{t('lblName', "Name")}</span>
-                <strong className="text-gray-900 text-base">{data.info?.name}</strong>
+                <span className="text-gray-500 block text-xs uppercase font-bold print:text-gray-700">{t('lblName', "Name")}</span>
+                <strong className="text-gray-900 text-base print:text-black">{data.info?.name}</strong>
               </div>
               <div>
-                <span className="text-gray-500 block text-xs uppercase font-bold">{t('lblDesig', "Designation")}</span>
-                <strong className="text-gray-800">{data.info?.designation}</strong>
+                <span className="text-gray-500 block text-xs uppercase font-bold print:text-gray-700">{t('lblDesig', "Designation")}</span>
+                <strong className="text-gray-800 print:text-black">{data.info?.designation}</strong>
               </div>
               <div>
-                <span className="text-gray-500 block text-xs uppercase font-bold">{t('lblDept', "Department")}</span>
-                <strong className="text-gray-800">{data.info?.department}</strong>
+                <span className="text-gray-500 block text-xs uppercase font-bold print:text-gray-700">{t('lblDept', "Department")}</span>
+                <strong className="text-gray-800 print:text-black">{data.info?.department}</strong>
               </div>
 
               {/* WORK AREA (1-LINE BOX WITH SUBMIT & CHANGE BUTTON) */}
@@ -1819,28 +1820,32 @@ export default function App() {
             </div>
 
             {/* ATTENDANCE SUMMARY TABLE WITH 3-TIER EXTRA HOUR SELECTION */}
-            <div className="overflow-x-auto border-2 border-gray-200 rounded-xl shadow-md">
-              <table className="w-full text-sm text-left text-gray-800">
-                <thead className="text-xs text-white uppercase bg-[#034EA2] print:text-black print:bg-gray-100">
+            <div className="overflow-x-auto border-2 border-gray-200 rounded-xl shadow-md print:border print:border-gray-400 print:shadow-none print:rounded-none">
+              <table className="w-full text-sm text-left text-gray-800 print:text-black">
+                <thead className="text-xs text-white uppercase bg-[#034EA2] print:text-black print:bg-white">
                   <tr>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">DATE</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">DAY</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">SCH IN</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">SCH OUT</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">IN TIME</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">OUT TIME</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">WORKING HOURS</th>
-                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap">STATUS</th>
-                    <th scope="col" className="px-3 py-3.5 text-center whitespace-nowrap font-black bg-[#002652] print:bg-gray-200 min-w-[275px]">
-                      <div className="flex flex-col items-center justify-center gap-1">
-                        <div className="flex items-center gap-1.5 text-xs text-white uppercase font-extrabold tracking-wider">
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap print:py-1.5 print:px-2 print:border print:border-gray-400 print:bg-white print:text-black">DATE</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap print:py-1.5 print:px-2 print:border print:border-gray-400 print:bg-white print:text-black">DAY</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap print:py-1.5 print:px-2 print:border print:border-gray-400 print:bg-white print:text-black">SCH IN</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap print:py-1.5 print:px-2 print:border print:border-gray-400 print:bg-white print:text-black">SCH OUT</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap print:py-1.5 print:px-2 print:border print:border-gray-400 print:bg-white print:text-black">IN TIME</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap print:py-1.5 print:px-2 print:border print:border-gray-400 print:bg-white print:text-black">OUT TIME</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap print:py-1.5 print:px-2 print:border print:border-gray-400 print:bg-white print:text-black">WORKING HOURS</th>
+                    <th scope="col" className="px-3 py-3.5 whitespace-nowrap print:py-1.5 print:px-2 print:border print:border-gray-400 print:bg-white print:text-black">STATUS</th>
+                    <th scope="col" className="px-3 py-2.5 text-center whitespace-normal font-black bg-[#001f3f] border-x-2 border-blue-900/60 print:bg-white print:text-black print:border print:border-gray-400 min-w-[285px]">
+                      <div className="flex flex-col items-center justify-center gap-1.5">
+                        <div className="flex items-center gap-1.5 text-xs text-white uppercase font-extrabold tracking-wider print:text-black">
                           <span>EXTRA / OT HOURS</span>
-                          <span className="text-amber-300 font-black text-sm">*</span>
+                          <span className="text-yellow-300 font-black text-sm print:hidden">*</span>
                         </div>
-                        <div className="grid grid-cols-3 gap-1.5 w-full text-[10px] font-bold no-print pt-1 border-t border-blue-400/30">
-                          <div className="text-center bg-blue-900/80 py-0.5 px-1 rounded border border-blue-400/30 text-blue-100" title="১ ঘণ্টা (পাঞ্চ ডাটা থাকলে)">1 Hour</div>
-                          <div className="text-center bg-blue-900/80 py-0.5 px-1 rounded border border-blue-400/30 text-blue-100" title="১+ থেকে ২ ঘণ্টা (পাঞ্চ ডাটা অনুযায়ী)">1+ to 2 Hrs</div>
-                          <div className="text-center bg-blue-900/80 py-0.5 px-1 rounded border border-blue-400/30 text-blue-100" title="ডিফল্ট সর্বোচ্চ ৩ ঘণ্টা (পাঞ্চ অনুযায়ী বাড়ানো যাবে)">2+ to 3H*</div>
+                        <div className="no-print w-full pt-0.5">
+                          <div className="bg-gradient-to-r from-amber-400 via-yellow-300 to-amber-400 hover:from-amber-300 hover:to-yellow-200 text-slate-950 px-3 py-1.5 rounded-lg shadow-sm border-2 border-amber-500 max-w-[300px] mx-auto transition-all">
+                            <p className="text-[11.5px] leading-snug font-bold">
+                              
+                              <span>২ ও ৩ ঘণ্টার চেকবক্স এন্ট্রির সুবিধার্থে দেওয়া হয়েছে — </span>
+                              <span className="font-black underline decoration-slate-950 underline-offset-2">Actual OT কম হলে সময় Edit করুন</span>
+                            </p>
+                          </div>
                         </div>
                       </div>
                     </th>
@@ -1871,8 +1876,8 @@ export default function App() {
                           className={`transition-colors duration-150 ${
                             isSelected 
                               ? hasError 
-                                ? 'bg-red-50/70 border-l-4 border-red-500'
-                                : 'bg-blue-50/70 border-l-4 border-[#034EA2]' 
+                                ? 'bg-red-50/70 border-l-4 border-red-500 print:bg-white print:border-l-0'
+                                : 'bg-blue-50/70 border-l-4 border-[#034EA2] print:bg-white print:border-l-0' 
                               : 'hover:bg-gray-50'
                           }`}
                         >
@@ -1924,8 +1929,8 @@ export default function App() {
                           <td className="px-3 py-3 whitespace-nowrap text-gray-700">{record.total || '-'}</td>
 
                           {/* 8. STATUS */}
-                          <td className="px-3 py-3 whitespace-nowrap">
-                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold ${
+                          <td className="px-3 py-3 whitespace-nowrap print:py-1.5 print:px-2 print:border print:border-gray-400">
+                            <span className={`inline-flex px-2 py-0.5 rounded text-xs font-bold print:bg-transparent print:text-black print:border-none print:p-0 print:font-bold ${
                               isSpecial 
                                 ? 'bg-purple-100 text-purple-900 border border-purple-200' 
                                 : record.status?.toUpperCase()?.includes('LATE')
@@ -2259,17 +2264,17 @@ export default function App() {
             </div>
 
             {/* REVIEW SUMMARY INPUTS & HR INFORMATION */}
-            <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200/90 shadow-sm space-y-5">
+            <div className="bg-white p-6 sm:p-8 rounded-3xl border border-slate-200/90 shadow-sm space-y-5 print:p-2 print:border-0 print:shadow-none print:rounded-none print:space-y-3">
               
               {/* Top Header Bar & Shift Info Pills */}
-              <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-2 border-b border-slate-100">
+              <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 pb-2 border-b border-slate-100 print:border-b-2 print:border-black">
                 <div className="flex items-start gap-3">
-                  <span className="w-3.5 h-3.5 rounded-full bg-[#034EA2] mt-1.5 shrink-0"></span>
+                  <span className="w-3.5 h-3.5 rounded-full bg-[#034EA2] mt-1.5 shrink-0 print:hidden"></span>
                   <div>
-                    <h3 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight">
+                    <h3 className="text-xl sm:text-2xl font-black text-slate-900 tracking-tight print:text-black print:text-lg">
                       Review Summary: {data.info?.name}
                     </h3>
-                    <p className="text-xs sm:text-sm text-slate-500 font-semibold mt-0.5">
+                    <p className="text-xs sm:text-sm text-slate-500 font-semibold mt-0.5 print:text-black">
                       {data.dateRange}
                     </p>
                   </div>
@@ -2278,118 +2283,118 @@ export default function App() {
                 {/* Right Shift Pills */}
                 <div className="grid grid-cols-2 sm:grid-cols-4 gap-2.5">
                   {/* Common Weekend */}
-                  <div className="bg-emerald-50/80 border border-emerald-200/80 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs">
-                    <Calendar className="w-5 h-5 text-emerald-600 shrink-0" />
+                  <div className="bg-emerald-50/80 border border-emerald-200/80 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs print:bg-white print:border-gray-400 print:shadow-none print:rounded-none">
+                    <Calendar className="w-5 h-5 text-emerald-600 shrink-0 print:text-black" />
                     <div>
-                      <span className="text-[10px] font-bold text-emerald-700 tracking-wider block">Common Weekend</span>
-                      <strong className="text-xs sm:text-sm font-black text-emerald-950 block">{sysConfig?.weekend || '4 Days'}</strong>
+                      <span className="text-[10px] font-bold text-emerald-700 tracking-wider block print:text-gray-700">Common Weekend</span>
+                      <strong className="text-xs sm:text-sm font-black text-emerald-950 block print:text-black">{sysConfig?.weekend || '4 Days'}</strong>
                     </div>
                   </div>
 
                   {/* Holiday */}
-                  <div className="bg-blue-50/80 border border-blue-200/80 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs">
-                    <CalendarDays className="w-5 h-5 text-blue-600 shrink-0" />
+                  <div className="bg-blue-50/80 border border-blue-200/80 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs print:bg-white print:border-gray-400 print:shadow-none print:rounded-none">
+                    <CalendarDays className="w-5 h-5 text-blue-600 shrink-0 print:text-black" />
                     <div>
-                      <span className="text-[10px] font-bold text-blue-700 tracking-wider block">Holiday</span>
-                      <strong className="text-xs sm:text-sm font-black text-blue-950 block">{sysConfig?.holiday || '2 Days'}</strong>
+                      <span className="text-[10px] font-bold text-blue-700 tracking-wider block print:text-gray-700">Holiday</span>
+                      <strong className="text-xs sm:text-sm font-black text-blue-950 block print:text-black">{sysConfig?.holiday || '2 Days'}</strong>
                     </div>
                   </div>
 
                   {/* Common Shift */}
-                  <div className="bg-amber-50/80 border border-amber-200/80 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs">
-                    <Clock className="w-5 h-5 text-amber-600 shrink-0" />
+                  <div className="bg-amber-50/80 border border-amber-200/80 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs print:bg-white print:border-gray-400 print:shadow-none print:rounded-none">
+                    <Clock className="w-5 h-5 text-amber-600 shrink-0 print:text-black" />
                     <div>
-                      <span className="text-[10px] font-bold text-amber-700 tracking-wider block">Common Shift</span>
-                      <strong className="text-xs sm:text-sm font-black text-amber-950 block">{sysConfig?.commonShift || '8 Hours'}</strong>
+                      <span className="text-[10px] font-bold text-amber-700 tracking-wider block print:text-gray-700">Common Shift</span>
+                      <strong className="text-xs sm:text-sm font-black text-amber-950 block print:text-black">{sysConfig?.commonShift || '8 Hours'}</strong>
                     </div>
                   </div>
 
                   {/* Special Shift */}
-                  <div className="bg-slate-100/80 border border-slate-200 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs">
-                    <FileText className="w-5 h-5 text-slate-600 shrink-0" />
+                  <div className="bg-slate-100/80 border border-slate-200 rounded-2xl px-3.5 py-2 flex items-center gap-2.5 shadow-2xs print:bg-white print:border-gray-400 print:shadow-none print:rounded-none">
+                    <FileText className="w-5 h-5 text-slate-600 shrink-0 print:text-black" />
                     <div>
-                      <span className="text-[10px] font-bold text-slate-600 tracking-wider block">Special Shift</span>
-                      <strong className="text-xs sm:text-sm font-black text-slate-900 block">{sysConfig?.specialShift || 'N/A'}</strong>
+                      <span className="text-[10px] font-bold text-slate-600 tracking-wider block print:text-gray-700">Special Shift</span>
+                      <strong className="text-xs sm:text-sm font-black text-slate-900 block print:text-black">{sysConfig?.specialShift || 'N/A'}</strong>
                     </div>
                   </div>
                 </div>
               </div>
 
               {/* Main Overtime & Holiday/Weekend KPI Segmented Card */}
-              <div className="border border-slate-200/90 rounded-2xl p-5 sm:p-6 bg-white shadow-2xs grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+              <div className="border border-slate-200/90 rounded-2xl p-5 sm:p-6 bg-white shadow-2xs grid grid-cols-1 lg:grid-cols-12 gap-6 items-center print:border print:border-gray-400 print:shadow-none print:rounded-none print:p-3">
                 {/* Segment 1: Month & Year Badge */}
-                <div className="lg:col-span-2 flex flex-col items-center justify-center text-center lg:border-r border-slate-200/80 pr-0 lg:pr-6 pb-4 lg:pb-0 border-b lg:border-b-0">
-                  <div className="w-12 h-12 rounded-2xl bg-blue-50 text-[#034EA2] flex items-center justify-center mb-2 shadow-2xs">
+                <div className="lg:col-span-2 flex flex-col items-center justify-center text-center lg:border-r border-slate-200/80 pr-0 lg:pr-6 pb-4 lg:pb-0 border-b lg:border-b-0 print:border-r print:border-gray-400">
+                  <div className="w-12 h-12 rounded-2xl bg-blue-50 text-[#034EA2] flex items-center justify-center mb-2 shadow-2xs print:hidden">
                     <Calendar className="w-6 h-6 text-[#034EA2]" />
                   </div>
-                  <span className="text-xs font-bold uppercase tracking-wider text-slate-500">
+                  <span className="text-xs font-bold uppercase tracking-wider text-slate-500 print:text-gray-700">
                     {sysConfig?.month || 'August'}
                   </span>
-                  <span className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight leading-none mt-0.5">
+                  <span className="text-2xl sm:text-3xl font-black text-slate-900 tracking-tight leading-none mt-0.5 print:text-black print:text-xl">
                     {sysConfig?.year || '2026'}
                   </span>
                 </div>
 
                 {/* Segment 2: Regular Overtime */}
-                <div className="lg:col-span-5 flex flex-col justify-between lg:border-r border-slate-200/80 px-0 lg:px-6 pb-4 lg:pb-0 border-b lg:border-b-0">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 rounded-2xl bg-blue-50 text-[#034EA2] flex items-center justify-center shrink-0 shadow-2xs">
+                <div className="lg:col-span-5 flex flex-col justify-between lg:border-r border-slate-200/80 px-0 lg:px-6 pb-4 lg:pb-0 border-b lg:border-b-0 print:border-r print:border-gray-400">
+                  <div className="flex items-center gap-3 mb-4 print:mb-1">
+                    <div className="w-10 h-10 rounded-2xl bg-blue-50 text-[#034EA2] flex items-center justify-center shrink-0 shadow-2xs print:hidden">
                       <Briefcase className="w-5 h-5 text-[#034EA2]" />
                     </div>
                     <div>
-                      <h4 className="text-sm sm:text-base font-bold text-slate-900">Regular Overtime</h4>
-                      <p className="text-[11px] text-slate-500 font-medium">Based on selected working days</p>
+                      <h4 className="text-sm sm:text-base font-bold text-slate-900 print:text-black">Regular Overtime</h4>
+                      <p className="text-[11px] text-slate-500 font-medium print:text-gray-600">Based on selected working days</p>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 items-center text-center">
                     <div>
-                      <span className="text-3xl sm:text-4xl font-black text-[#034EA2] tracking-tight block">
+                      <span className="text-3xl sm:text-4xl font-black text-[#034EA2] tracking-tight block print:text-black print:text-2xl">
                         {form.otDutyDays || '0'}
                       </span>
-                      <span className="text-xs font-semibold text-slate-500 mt-1 block">Duty Days</span>
+                      <span className="text-xs font-semibold text-slate-500 mt-1 block print:text-gray-700">Duty Days</span>
                     </div>
-                    <div className="border-l border-slate-200/90 pl-3">
-                      <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight block">
+                    <div className="border-l border-slate-200/90 pl-3 print:border-gray-400">
+                      <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight block print:text-black print:text-2xl">
                         {form.totalOtHours || '0:00'}
                       </span>
-                      <span className="text-xs font-semibold text-slate-500 mt-1 block">Total OT Hours</span>
+                      <span className="text-xs font-semibold text-slate-500 mt-1 block print:text-gray-700">Total OT Hours</span>
                     </div>
                   </div>
 
-                  <div className="h-1.5 w-full bg-[#034EA2] rounded-full mt-4"></div>
+                  <div className="h-1.5 w-full bg-[#034EA2] rounded-full mt-4 print:hidden"></div>
                   <input type="hidden" id="otDutyDays" value={form.otDutyDays} readOnly />
                   <input type="hidden" id="totalOtHours" value={form.totalOtHours} readOnly />
                 </div>
 
                 {/* Segment 3: Holiday / Weekend Overtime */}
                 <div className="lg:col-span-5 flex flex-col justify-between pl-0 lg:pl-6">
-                  <div className="flex items-center gap-3 mb-4">
-                    <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 shadow-2xs">
+                  <div className="flex items-center gap-3 mb-4 print:mb-1">
+                    <div className="w-10 h-10 rounded-2xl bg-amber-50 text-amber-600 flex items-center justify-center shrink-0 shadow-2xs print:hidden">
                       <CalendarDays className="w-5 h-5 text-amber-600" />
                     </div>
                     <div>
-                      <h4 className="text-sm sm:text-base font-bold text-slate-900">Holiday / Weekend Overtime</h4>
-                      <p className="text-[11px] text-slate-500 font-medium">Based on selected holiday and weekend days</p>
+                      <h4 className="text-sm sm:text-base font-bold text-slate-900 print:text-black">Holiday / Weekend Overtime</h4>
+                      <p className="text-[11px] text-slate-500 font-medium print:text-gray-600">Based on selected holiday and weekend days</p>
                     </div>
                   </div>
 
                   <div className="grid grid-cols-2 items-center text-center">
                     <div>
-                      <span className="text-3xl sm:text-4xl font-black text-amber-700 tracking-tight block">
+                      <span className="text-3xl sm:text-4xl font-black text-amber-700 tracking-tight block print:text-black print:text-2xl">
                         {form.totalHolidayDays || '0'}
                       </span>
-                      <span className="text-xs font-semibold text-slate-500 mt-1 block">Duty Days</span>
+                      <span className="text-xs font-semibold text-slate-500 mt-1 block print:text-gray-700">Duty Days</span>
                     </div>
-                    <div className="border-l border-slate-200/90 pl-3">
-                      <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight block">
+                    <div className="border-l border-slate-200/90 pl-3 print:border-gray-400">
+                      <span className="text-3xl sm:text-4xl font-black text-slate-900 tracking-tight block print:text-black print:text-2xl">
                         {form.totalHolidayHours || '0:00'}
                       </span>
-                      <span className="text-xs font-semibold text-slate-500 mt-1 block">Total OT Hours</span>
+                      <span className="text-xs font-semibold text-slate-500 mt-1 block print:text-gray-700">Total OT Hours</span>
                     </div>
                   </div>
 
-                  <div className="h-1.5 w-full bg-amber-400 rounded-full mt-4"></div>
+                  <div className="h-1.5 w-full bg-amber-400 rounded-full mt-4 print:hidden"></div>
                   <input type="hidden" id="totalHolidayDays" value={form.totalHolidayDays} readOnly />
                   <input type="hidden" id="totalHolidayHours" value={form.totalHolidayHours} readOnly />
                 </div>
